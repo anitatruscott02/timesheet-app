@@ -14,6 +14,26 @@ from datetime import timedelta
 import plotly.express as px
 import plotly.graph_objects as go
 import os
+import pytz
+from io import BytesIO
+
+# ============== TIMEZONE CONFIGURATION ==============
+# Change this to your timezone
+APP_TIMEZONE = pytz.timezone('Africa/Lagos')  # West Africa Time (WAT) UTC+1
+
+def get_local_time():
+    """Get current time in local timezone"""
+    return datetime.datetime.now(APP_TIMEZONE)
+
+def format_datetime(dt):
+    """Format datetime for display"""
+    if dt is None:
+        return None
+    if isinstance(dt, str):
+        dt = datetime.datetime.fromisoformat(dt.replace('Z', '+00:00'))
+    if dt.tzinfo is None:
+        dt = pytz.utc.localize(dt)
+    return dt.astimezone(APP_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')
 
 # ============== DATABASE CONFIGURATION ==============
 # Set these in Streamlit Cloud Secrets or environment variables
@@ -214,8 +234,9 @@ def log_audit(user_id, action, entity_type=None, entity_id=None, details=None):
     conn = get_connection()
     try:
         with conn.cursor() as c:
-            c.execute("""INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details) 
-                         VALUES (%s, %s, %s, %s, %s)""", (user_id, action, entity_type, entity_id, details))
+            local_time = get_local_time()
+            c.execute("""INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details, created_at) 
+                         VALUES (%s, %s, %s, %s, %s, %s)""", (user_id, action, entity_type, entity_id, details, local_time))
             conn.commit()
     finally:
         release_connection(conn)
@@ -361,10 +382,11 @@ def save_time_entry(employee_id, project_id, entry_date, hours, minutes, descrip
     conn = get_connection()
     try:
         with conn.cursor() as c:
-            submitted_at = datetime.datetime.now() if status == 'submitted' else None
-            c.execute("""INSERT INTO time_entries (employee_id, project_id, entry_date, hours, minutes, description, task_type, is_billable, status, submitted_at)
-                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                      (employee_id, project_id, entry_date, hours, minutes, description, task_type, is_billable, status, submitted_at))
+            local_time = get_local_time()
+            submitted_at = local_time if status == 'submitted' else None
+            c.execute("""INSERT INTO time_entries (employee_id, project_id, entry_date, hours, minutes, description, task_type, is_billable, status, submitted_at, created_at, updated_at)
+                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                      (employee_id, project_id, entry_date, hours, minutes, description, task_type, is_billable, status, submitted_at, local_time, local_time))
             entry_id = c.fetchone()[0]
             conn.commit()
             log_audit(employee_id, f"TIME_ENTRY_{status.upper()}", "time_entry", entry_id)
@@ -455,7 +477,7 @@ def workhub_recalls():
     st.subheader("Recall Requests")
     
     recall_window = int(get_setting('recall_window_hours') or 24)
-    cutoff = datetime.datetime.now() - timedelta(hours=recall_window)
+    cutoff = get_local_time() - timedelta(hours=recall_window)
     
     recallable = execute_df("""
         SELECT te.id, c.name as "Client", p.name as "Project", te.entry_date as "Date",
@@ -599,8 +621,9 @@ def update_entry_status(entry_id, status, reviewer_id, comment=None):
     conn = get_connection()
     try:
         with conn.cursor() as c:
-            c.execute("""UPDATE time_entries SET status=%s, reviewed_by=%s, reviewed_at=%s, review_comment=%s
-                         WHERE id=%s""", (status, reviewer_id, datetime.datetime.now(), comment, entry_id))
+            local_time = get_local_time()
+            c.execute("""UPDATE time_entries SET status=%s, reviewed_by=%s, reviewed_at=%s, review_comment=%s, updated_at=%s
+                         WHERE id=%s""", (status, reviewer_id, local_time, comment, local_time, entry_id))
             conn.commit()
     finally:
         release_connection(conn)
@@ -815,7 +838,7 @@ def techcore_dashboard():
     st.title("⚙️ TechCore - Admin Portal")
     st.markdown(f"Welcome, **{user['full_name']}**")
     
-    tabs = st.tabs(["👥 Users", "🏢 Clients", "📁 Projects", "📊 Reports", "⚙️ Settings", "📜 Audit Logs"])
+    tabs = st.tabs(["👥 Users", "🏢 Clients", "📁 Projects", "📊 Reports", "📤 Export Center", "⚙️ Settings", "📜 Audit Logs"])
     
     with tabs[0]:
         techcore_users()
@@ -826,8 +849,10 @@ def techcore_dashboard():
     with tabs[3]:
         techcore_reports()
     with tabs[4]:
-        techcore_settings()
+        techcore_export_center()
     with tabs[5]:
+        techcore_settings()
+    with tabs[6]:
         techcore_audit()
 
 def techcore_users():
@@ -883,7 +908,7 @@ def techcore_users():
         edit_user = st.selectbox("Select User", users['Username'].tolist())
         user_id = int(users[users['Username'] == edit_user]['id'].values[0])
     with col2:
-        action = st.selectbox("Action", ["Reset Password", "Toggle Active", "Change Role"])
+        action = st.selectbox("Action", ["Reset Password", "Toggle Active", "Change Role", "🗑️ Delete User"])
     
     if action == "Reset Password":
         new_pwd = st.text_input("New Password", type="password", key="reset_pwd")
@@ -923,6 +948,32 @@ def techcore_users():
             log_audit(st.session_state.user['id'], "CHANGE_ROLE", "user", user_id, new_role)
             st.success("Role updated!")
             st.rerun()
+    elif action == "🗑️ Delete User":
+        st.warning(f"⚠️ You are about to permanently delete user: **{edit_user}**")
+        st.caption("This will also delete all their time entries and project assignments.")
+        
+        if edit_user == "admin":
+            st.error("❌ Cannot delete the main admin account!")
+        else:
+            confirm = st.text_input("Type the username to confirm deletion:", key="confirm_delete")
+            if st.button("🗑️ Permanently Delete", type="primary"):
+                if confirm == edit_user:
+                    conn = get_connection()
+                    try:
+                        with conn.cursor() as c:
+                            # Delete related records first
+                            c.execute("DELETE FROM time_entries WHERE employee_id=%s", (user_id,))
+                            c.execute("DELETE FROM project_assignments WHERE employee_id=%s", (user_id,))
+                            c.execute("DELETE FROM recall_requests WHERE employee_id=%s", (user_id,))
+                            c.execute("DELETE FROM users WHERE id=%s", (user_id,))
+                            conn.commit()
+                    finally:
+                        release_connection(conn)
+                    log_audit(st.session_state.user['id'], "DELETE_USER", "user", user_id, edit_user)
+                    st.success(f"✅ User '{edit_user}' deleted permanently!")
+                    st.rerun()
+                else:
+                    st.error("Username doesn't match. Deletion cancelled.")
 
 def techcore_clients():
     st.subheader("Client Management")
@@ -963,6 +1014,64 @@ def techcore_clients():
     """)
     
     st.dataframe(clients, use_container_width=True, hide_index=True)
+    
+    # Delete Client Section
+    if not clients.empty:
+        st.markdown("---")
+        st.markdown("**Manage Client**")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            selected_client = st.selectbox("Select Client", clients['Client'].tolist())
+            client_id = int(clients[clients['Client'] == selected_client]['id'].values[0])
+        with col2:
+            client_action = st.selectbox("Action", ["Toggle Active", "🗑️ Delete Client"], key="client_action")
+        
+        if client_action == "Toggle Active":
+            if st.button("Toggle Client Status"):
+                conn = get_connection()
+                try:
+                    with conn.cursor() as c:
+                        c.execute("UPDATE clients SET is_active = NOT is_active WHERE id=%s", (client_id,))
+                        conn.commit()
+                finally:
+                    release_connection(conn)
+                log_audit(st.session_state.user['id'], "TOGGLE_CLIENT_STATUS", "client", client_id)
+                st.success("Client status toggled!")
+                st.rerun()
+        
+        elif client_action == "🗑️ Delete Client":
+            st.warning(f"⚠️ You are about to permanently delete client: **{selected_client}**")
+            st.caption("This will also delete all projects and time entries under this client.")
+            
+            confirm = st.text_input("Type the client name to confirm deletion:", key="confirm_delete_client")
+            if st.button("🗑️ Permanently Delete Client", type="primary"):
+                if confirm == selected_client:
+                    conn = get_connection()
+                    try:
+                        with conn.cursor() as c:
+                            # Get all projects under this client
+                            c.execute("SELECT id FROM projects WHERE client_id=%s", (client_id,))
+                            project_ids = [row[0] for row in c.fetchall()]
+                            
+                            # Delete time entries for those projects
+                            for pid in project_ids:
+                                c.execute("DELETE FROM time_entries WHERE project_id=%s", (pid,))
+                                c.execute("DELETE FROM project_assignments WHERE project_id=%s", (pid,))
+                            
+                            # Delete projects
+                            c.execute("DELETE FROM projects WHERE client_id=%s", (client_id,))
+                            
+                            # Delete client
+                            c.execute("DELETE FROM clients WHERE id=%s", (client_id,))
+                            conn.commit()
+                    finally:
+                        release_connection(conn)
+                    log_audit(st.session_state.user['id'], "DELETE_CLIENT", "client", client_id, selected_client)
+                    st.success(f"✅ Client '{selected_client}' deleted permanently!")
+                    st.rerun()
+                else:
+                    st.error("Client name doesn't match. Deletion cancelled.")
 
 def techcore_projects_admin():
     st.subheader("All Projects")
@@ -985,16 +1094,18 @@ def techcore_projects_admin():
     
     if not projects.empty:
         st.markdown("---")
-        col1, col2, col3 = st.columns([2, 2, 1])
+        st.markdown("**Manage Project**")
+        col1, col2 = st.columns(2)
+        
         with col1:
             sel_proj = st.selectbox("Select Project", projects['Project'].tolist())
+            proj_id = int(projects[projects['Project'] == sel_proj]['id'].values[0])
         with col2:
+            proj_action = st.selectbox("Action", ["Update Status", "🗑️ Delete Project"], key="proj_action")
+        
+        if proj_action == "Update Status":
             new_status = st.selectbox("New Status", ["active", "on_hold", "completed", "cancelled"])
-        with col3:
-            st.write("")
-            st.write("")
             if st.button("Update Status"):
-                proj_id = int(projects[projects['Project'] == sel_proj]['id'].values[0])
                 conn = get_connection()
                 try:
                     with conn.cursor() as c:
@@ -1005,6 +1116,28 @@ def techcore_projects_admin():
                 log_audit(st.session_state.user['id'], "UPDATE_PROJECT_STATUS", "project", proj_id, new_status)
                 st.success("Status updated!")
                 st.rerun()
+        
+        elif proj_action == "🗑️ Delete Project":
+            st.warning(f"⚠️ You are about to permanently delete project: **{sel_proj}**")
+            st.caption("This will also delete all time entries and assignments for this project.")
+            
+            confirm = st.text_input("Type the project name to confirm deletion:", key="confirm_delete_proj")
+            if st.button("🗑️ Permanently Delete Project", type="primary"):
+                if confirm == sel_proj:
+                    conn = get_connection()
+                    try:
+                        with conn.cursor() as c:
+                            c.execute("DELETE FROM time_entries WHERE project_id=%s", (proj_id,))
+                            c.execute("DELETE FROM project_assignments WHERE project_id=%s", (proj_id,))
+                            c.execute("DELETE FROM projects WHERE id=%s", (proj_id,))
+                            conn.commit()
+                    finally:
+                        release_connection(conn)
+                    log_audit(st.session_state.user['id'], "DELETE_PROJECT", "project", proj_id, sel_proj)
+                    st.success(f"✅ Project '{sel_proj}' deleted permanently!")
+                    st.rerun()
+                else:
+                    st.error("Project name doesn't match. Deletion cancelled.")
 
 def techcore_reports():
     st.subheader("System Reports")
@@ -1079,6 +1212,266 @@ def techcore_reports():
         else:
             st.info("No data found for selected criteria")
 
+def techcore_export_center():
+    st.subheader("📤 Export Center")
+    
+    st.markdown("""
+    Export your timesheet data to CSV files for backup, analysis, or SharePoint upload.
+    """)
+    
+    # Date range selection
+    st.markdown("### 📅 Select Date Range")
+    col1, col2 = st.columns(2)
+    with col1:
+        export_start = st.date_input("From Date", datetime.date.today() - timedelta(days=30), key="export_start")
+    with col2:
+        export_end = st.date_input("To Date", datetime.date.today(), key="export_end")
+    
+    st.markdown("---")
+    
+    # Export Options
+    st.markdown("### 📁 Select Data to Export")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### Time Entries")
+        if st.button("📥 Export All Time Entries", use_container_width=True):
+            df = execute_df("""
+                SELECT 
+                    te.id as "Entry_ID",
+                    u.full_name as "Employee",
+                    u.department as "Department",
+                    c.name as "Client",
+                    p.name as "Project",
+                    te.entry_date as "Date",
+                    te.hours as "Hours",
+                    te.minutes as "Minutes",
+                    (te.hours + te.minutes/60.0) as "Total_Hours",
+                    te.task_type as "Task_Type",
+                    CASE WHEN te.is_billable THEN 'Yes' ELSE 'No' END as "Billable",
+                    te.status as "Status",
+                    te.description as "Description",
+                    te.submitted_at as "Submitted_At",
+                    r.full_name as "Reviewed_By",
+                    te.reviewed_at as "Reviewed_At",
+                    te.review_comment as "Review_Comment"
+                FROM time_entries te
+                JOIN users u ON te.employee_id = u.id
+                JOIN projects p ON te.project_id = p.id
+                JOIN clients c ON p.client_id = c.id
+                LEFT JOIN users r ON te.reviewed_by = r.id
+                WHERE te.entry_date BETWEEN %s AND %s
+                ORDER BY te.entry_date DESC, u.full_name
+            """, (export_start, export_end))
+            
+            if not df.empty:
+                csv = df.to_csv(index=False)
+                timestamp = get_local_time().strftime('%Y%m%d_%H%M%S')
+                st.download_button(
+                    "⬇️ Download Time Entries CSV",
+                    csv,
+                    f"time_entries_{export_start}_{export_end}_{timestamp}.csv",
+                    "text/csv",
+                    key="download_entries"
+                )
+                st.success(f"✅ {len(df)} entries ready for download!")
+            else:
+                st.warning("No time entries found for selected period")
+        
+        st.markdown("#### Approved Entries Only")
+        if st.button("📥 Export Approved Entries", use_container_width=True):
+            df = execute_df("""
+                SELECT 
+                    u.full_name as "Employee",
+                    u.department as "Department",
+                    c.name as "Client",
+                    p.name as "Project",
+                    te.entry_date as "Date",
+                    te.hours as "Hours",
+                    te.minutes as "Minutes",
+                    (te.hours + te.minutes/60.0) as "Total_Hours",
+                    te.task_type as "Task_Type",
+                    CASE WHEN te.is_billable THEN 'Yes' ELSE 'No' END as "Billable",
+                    te.description as "Description",
+                    r.full_name as "Approved_By",
+                    te.reviewed_at as "Approved_At"
+                FROM time_entries te
+                JOIN users u ON te.employee_id = u.id
+                JOIN projects p ON te.project_id = p.id
+                JOIN clients c ON p.client_id = c.id
+                LEFT JOIN users r ON te.reviewed_by = r.id
+                WHERE te.entry_date BETWEEN %s AND %s AND te.status = 'approved'
+                ORDER BY te.entry_date DESC, u.full_name
+            """, (export_start, export_end))
+            
+            if not df.empty:
+                csv = df.to_csv(index=False)
+                timestamp = get_local_time().strftime('%Y%m%d_%H%M%S')
+                st.download_button(
+                    "⬇️ Download Approved Entries CSV",
+                    csv,
+                    f"approved_entries_{export_start}_{export_end}_{timestamp}.csv",
+                    "text/csv",
+                    key="download_approved"
+                )
+                st.success(f"✅ {len(df)} approved entries ready for download!")
+            else:
+                st.warning("No approved entries found for selected period")
+    
+    with col2:
+        st.markdown("#### Users List")
+        if st.button("📥 Export All Users", use_container_width=True):
+            df = execute_df("""
+                SELECT 
+                    u.id as "User_ID",
+                    u.username as "Username",
+                    u.full_name as "Full_Name",
+                    u.email as "Email",
+                    u.role as "Role",
+                    u.department as "Department",
+                    CASE WHEN u.is_active THEN 'Active' ELSE 'Inactive' END as "Status",
+                    u.created_at as "Created_At"
+                FROM users u
+                ORDER BY u.full_name
+            """)
+            
+            if not df.empty:
+                csv = df.to_csv(index=False)
+                timestamp = get_local_time().strftime('%Y%m%d_%H%M%S')
+                st.download_button(
+                    "⬇️ Download Users CSV",
+                    csv,
+                    f"users_list_{timestamp}.csv",
+                    "text/csv",
+                    key="download_users"
+                )
+                st.success(f"✅ {len(df)} users ready for download!")
+        
+        st.markdown("#### Projects & Assignments")
+        if st.button("📥 Export Projects & Teams", use_container_width=True):
+            df = execute_df("""
+                SELECT 
+                    c.name as "Client",
+                    p.name as "Project",
+                    p.status as "Project_Status",
+                    m.full_name as "Project_Manager",
+                    u.full_name as "Team_Member",
+                    u.department as "Department",
+                    pa.assigned_at as "Assigned_At"
+                FROM projects p
+                JOIN clients c ON p.client_id = c.id
+                LEFT JOIN users m ON p.manager_id = m.id
+                LEFT JOIN project_assignments pa ON p.id = pa.project_id
+                LEFT JOIN users u ON pa.employee_id = u.id
+                ORDER BY c.name, p.name, u.full_name
+            """)
+            
+            if not df.empty:
+                csv = df.to_csv(index=False)
+                timestamp = get_local_time().strftime('%Y%m%d_%H%M%S')
+                st.download_button(
+                    "⬇️ Download Projects CSV",
+                    csv,
+                    f"projects_teams_{timestamp}.csv",
+                    "text/csv",
+                    key="download_projects"
+                )
+                st.success(f"✅ {len(df)} records ready for download!")
+    
+    st.markdown("---")
+    
+    # Full Data Export
+    st.markdown("### 📦 Full Data Export (All Tables)")
+    
+    if st.button("📥 Export Complete Database Backup", use_container_width=True, type="primary"):
+        timestamp = get_local_time().strftime('%Y%m%d_%H%M%S')
+        
+        # Create Excel file with multiple sheets
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            # Users
+            users_df = execute_df("SELECT * FROM users ORDER BY id")
+            users_df.to_excel(writer, sheet_name='Users', index=False)
+            
+            # Clients
+            clients_df = execute_df("SELECT * FROM clients ORDER BY id")
+            clients_df.to_excel(writer, sheet_name='Clients', index=False)
+            
+            # Projects
+            projects_df = execute_df("SELECT * FROM projects ORDER BY id")
+            projects_df.to_excel(writer, sheet_name='Projects', index=False)
+            
+            # Project Assignments
+            assignments_df = execute_df("SELECT * FROM project_assignments ORDER BY id")
+            assignments_df.to_excel(writer, sheet_name='Assignments', index=False)
+            
+            # Time Entries
+            entries_df = execute_df("SELECT * FROM time_entries ORDER BY id")
+            entries_df.to_excel(writer, sheet_name='Time_Entries', index=False)
+            
+            # Audit Logs
+            audit_df = execute_df("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 10000")
+            audit_df.to_excel(writer, sheet_name='Audit_Logs', index=False)
+        
+        output.seek(0)
+        
+        st.download_button(
+            "⬇️ Download Full Backup (Excel)",
+            output,
+            f"timesheet_backup_{timestamp}.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_full_backup"
+        )
+        st.success("✅ Full database backup ready for download!")
+        log_audit(st.session_state.user['id'], "EXPORT_FULL_BACKUP", "system", None, f"Backup created at {timestamp}")
+    
+    st.markdown("---")
+    
+    # SharePoint Instructions
+    st.markdown("### ☁️ Upload to SharePoint")
+    
+    with st.expander("📖 How to Upload to SharePoint", expanded=False):
+        st.markdown("""
+        **Manual Upload Steps:**
+        
+        1. **Download** the CSV/Excel file using buttons above
+        2. **Go to SharePoint** → Your document library
+        3. **Click "Upload"** → Select the downloaded file
+        4. **Done!** File is now in SharePoint
+        
+        ---
+        
+        **For Automatic Sync (Power Automate):**
+        
+        1. Go to [Power Automate](https://flow.microsoft.com)
+        2. Create a new flow: **"Scheduled cloud flow"**
+        3. Set schedule (e.g., Daily at 6 PM)
+        4. Add action: **"HTTP"** to call your app's export endpoint
+        5. Add action: **"SharePoint - Create file"**
+        6. Save and enable the flow
+        
+        ---
+        
+        **Recommended Folder Structure in SharePoint:**
+        ```
+        📁 Timesheet Reports
+           ├── 📁 Daily Exports
+           ├── 📁 Weekly Summaries
+           ├── 📁 Monthly Reports
+           └── 📁 Backups
+        ```
+        """)
+    
+    # Auto-export settings (stored in session for now)
+    st.markdown("### ⏰ Schedule Reminder")
+    st.info("""
+    💡 **Tip:** Set a calendar reminder to export data regularly:
+    - **Daily:** Time entries for payroll
+    - **Weekly:** Project summaries for management
+    - **Monthly:** Full backup for compliance
+    """)
+
 def techcore_settings():
     st.subheader("System Settings")
     
@@ -1099,11 +1492,12 @@ def techcore_settings():
     if st.button("💾 Save Settings", type="primary"):
         conn = get_connection()
         try:
+            local_time = get_local_time()
             with conn.cursor() as c:
-                c.execute("UPDATE settings SET value=%s, updated_at=%s WHERE key='company_name'", (company, datetime.datetime.now()))
-                c.execute("UPDATE settings SET value=%s, updated_at=%s WHERE key='recall_window_hours'", (str(recall_hrs), datetime.datetime.now()))
-                c.execute("UPDATE settings SET value=%s, updated_at=%s WHERE key='overtime_threshold'", (str(overtime), datetime.datetime.now()))
-                c.execute("UPDATE settings SET value=%s, updated_at=%s WHERE key='work_week_start'", (week_start, datetime.datetime.now()))
+                c.execute("UPDATE settings SET value=%s, updated_at=%s WHERE key='company_name'", (company, local_time))
+                c.execute("UPDATE settings SET value=%s, updated_at=%s WHERE key='recall_window_hours'", (str(recall_hrs), local_time))
+                c.execute("UPDATE settings SET value=%s, updated_at=%s WHERE key='overtime_threshold'", (str(overtime), local_time))
+                c.execute("UPDATE settings SET value=%s, updated_at=%s WHERE key='work_week_start'", (week_start, local_time))
                 conn.commit()
         finally:
             release_connection(conn)
@@ -1125,6 +1519,12 @@ def techcore_settings():
     col3.metric("Projects", stats['projects'])
     col4.metric("Time Entries", stats['time_entries'])
     col5.metric("Audit Logs", stats['audit_logs'])
+    
+    # Show current timezone
+    st.markdown("---")
+    st.subheader("System Information")
+    st.info(f"🕐 **Server Timezone:** Africa/Lagos (WAT - West Africa Time)")
+    st.caption(f"Current server time: {get_local_time().strftime('%Y-%m-%d %H:%M:%S')}")
 
 def techcore_audit():
     st.subheader("Audit Logs")
