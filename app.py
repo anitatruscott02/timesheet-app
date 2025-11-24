@@ -1,6 +1,6 @@
 """
 Execution Edge Timesheet Management System
-Production-Ready with PostgreSQL for Multi-User Deployment
+Production-Ready with PostgreSQL - Enhanced UI
 """
 
 import streamlit as st
@@ -18,38 +18,40 @@ import pytz
 from io import BytesIO
 
 # ============== TIMEZONE CONFIGURATION ==============
-# Change this to your timezone
-APP_TIMEZONE = pytz.timezone('Africa/Lagos')  # West Africa Time (WAT) UTC+1
+# West Africa Time (WAT) is UTC+1
+APP_TIMEZONE = pytz.timezone('Africa/Lagos')
 
 def get_local_time():
-    """Get current time in local timezone"""
-    return datetime.datetime.now(APP_TIMEZONE)
+    """Get current time in local timezone - WAT (UTC+1)"""
+    utc_now = datetime.datetime.now(pytz.UTC)
+    return utc_now.astimezone(APP_TIMEZONE)
+
+def get_local_time_naive():
+    """Get current local time as naive datetime for database storage"""
+    local = get_local_time()
+    return local.replace(tzinfo=None)
 
 def format_datetime(dt):
     """Format datetime for display"""
     if dt is None:
         return None
     if isinstance(dt, str):
-        dt = datetime.datetime.fromisoformat(dt.replace('Z', '+00:00'))
-    if dt.tzinfo is None:
-        dt = pytz.utc.localize(dt)
-    return dt.astimezone(APP_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')
+        try:
+            dt = datetime.datetime.fromisoformat(dt.replace('Z', '+00:00'))
+        except:
+            return dt
+    if hasattr(dt, 'tzinfo') and dt.tzinfo is None:
+        # Assume it's already in local time
+        return dt.strftime('%Y-%m-%d %H:%M:%S')
+    elif hasattr(dt, 'astimezone'):
+        return dt.astimezone(APP_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')
+    return str(dt)
 
 # ============== DATABASE CONFIGURATION ==============
-# Set these in Streamlit Cloud Secrets or environment variables
-# Create a .streamlit/secrets.toml file locally:
-# [database]
-# host = "your-host.supabase.co"
-# database = "postgres"
-# user = "postgres"
-# password = "your-password"
-# port = "5432"
-
 @st.cache_resource
 def init_connection_pool():
     """Create a connection pool for PostgreSQL"""
     try:
-        # Try Streamlit secrets first
         db_config = st.secrets["database"]
         return psycopg2.pool.ThreadedConnectionPool(
             minconn=1,
@@ -67,17 +69,14 @@ def init_connection_pool():
         st.stop()
 
 def get_connection():
-    """Get a connection from the pool"""
     pool = init_connection_pool()
     return pool.getconn()
 
 def release_connection(conn):
-    """Return connection to pool"""
     pool = init_connection_pool()
     pool.putconn(conn)
 
 def execute_query(query, params=None, fetch=True):
-    """Execute a query and return results"""
     conn = get_connection()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -91,7 +90,6 @@ def execute_query(query, params=None, fetch=True):
         release_connection(conn)
 
 def execute_df(query, params=None):
-    """Execute query and return DataFrame"""
     conn = get_connection()
     try:
         df = pd.read_sql_query(query, conn, params=params)
@@ -100,7 +98,6 @@ def execute_df(query, params=None):
         release_connection(conn)
 
 def init_database():
-    """Initialize database tables"""
     conn = get_connection()
     try:
         with conn.cursor() as c:
@@ -150,16 +147,18 @@ def init_database():
                 UNIQUE(project_id, employee_id)
             )''')
             
-            # Time entries
+            # Time entries - Updated with entry_type and category
             c.execute('''CREATE TABLE IF NOT EXISTS time_entries (
                 id SERIAL PRIMARY KEY,
                 employee_id INTEGER NOT NULL REFERENCES users(id),
-                project_id INTEGER NOT NULL REFERENCES projects(id),
+                project_id INTEGER REFERENCES projects(id),
                 entry_date DATE NOT NULL,
                 hours REAL NOT NULL,
                 minutes INTEGER DEFAULT 0,
                 description TEXT,
                 task_type VARCHAR(50),
+                entry_type VARCHAR(50) DEFAULT 'project_work',
+                entry_category VARCHAR(50),
                 is_billable BOOLEAN DEFAULT TRUE,
                 status VARCHAR(20) DEFAULT 'draft' CHECK(status IN ('draft', 'submitted', 'approved', 'rejected', 'recalled')),
                 submitted_at TIMESTAMP,
@@ -169,6 +168,13 @@ def init_database():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )''')
+            
+            # Add new columns if they don't exist (for existing databases)
+            try:
+                c.execute("ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS entry_type VARCHAR(50) DEFAULT 'project_work'")
+                c.execute("ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS entry_category VARCHAR(50)")
+            except:
+                pass
             
             # Recall requests
             c.execute('''CREATE TABLE IF NOT EXISTS recall_requests (
@@ -220,6 +226,11 @@ def init_database():
                 c.execute("""INSERT INTO settings (key, value) VALUES (%s, %s) 
                              ON CONFLICT (key) DO NOTHING""", (key, val))
             
+            # Create EE Internal client if not exists
+            c.execute("SELECT id FROM clients WHERE name = 'EE Internal'")
+            if not c.fetchone():
+                c.execute("INSERT INTO clients (name, description) VALUES ('EE Internal', 'Internal company activities')")
+            
             conn.commit()
     finally:
         release_connection(conn)
@@ -234,7 +245,7 @@ def log_audit(user_id, action, entity_type=None, entity_id=None, details=None):
     conn = get_connection()
     try:
         with conn.cursor() as c:
-            local_time = get_local_time()
+            local_time = get_local_time_naive()
             c.execute("""INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details, created_at) 
                          VALUES (%s, %s, %s, %s, %s, %s)""", (user_id, action, entity_type, entity_id, details, local_time))
             conn.commit()
@@ -261,132 +272,336 @@ def authenticate(username, password):
     return None
 
 def login_page():
-    st.markdown("""
-    <style>
-    .login-box {
-        max-width: 400px;
-        margin: 0 auto;
-        padding: 2rem;
-        background: white;
-        border-radius: 16px;
-        box-shadow: 0 4px 20px rgba(0,0,0,0.1);
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    # Get company name
+    company_name = get_setting('company_name') or 'Execution Edge'
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
-        st.markdown(f"## 🧭 {get_setting('company_name') or 'Execution Edge'}")
-        st.markdown("### Timesheet Management System")
+        st.markdown(f"""
+        <div style="text-align: center; padding: 20px;">
+            <h1 style="margin-bottom: 5px;">🧭 {company_name}</h1>
+            <h3 style="font-weight: normal; opacity: 0.8;">Timesheet Management System</h3>
+        </div>
+        """, unsafe_allow_html=True)
+        
         st.markdown("---")
         
-        username = st.text_input("Username", placeholder="Enter username")
-        password = st.text_input("Password", type="password", placeholder="Enter password")
-        
-        if st.button("🔐 Login", use_container_width=True, type="primary"):
-            if username and password:
-                user = authenticate(username, password)
-                if user:
-                    if "error" in user:
-                        st.error(user["error"])
+        with st.container():
+            username = st.text_input("👤 Username", placeholder="Enter username")
+            password = st.text_input("🔒 Password", type="password", placeholder="Enter password")
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            if st.button("🔐 Login", use_container_width=True, type="primary"):
+                if username and password:
+                    user = authenticate(username, password)
+                    if user:
+                        if "error" in user:
+                            st.error(user["error"])
+                        else:
+                            st.session_state.user = user
+                            st.session_state.logged_in = True
+                            log_audit(user["id"], "LOGIN", "user", user["id"])
+                            st.rerun()
                     else:
-                        st.session_state.user = user
-                        st.session_state.logged_in = True
-                        log_audit(user["id"], "LOGIN", "user", user["id"])
-                        st.rerun()
+                        st.error("❌ Invalid credentials")
                 else:
-                    st.error("Invalid credentials")
-            else:
-                st.warning("Please enter username and password")
+                    st.warning("⚠️ Please enter username and password")
         
         st.markdown("---")
         st.caption("Default admin: admin / admin123")
+        
+        # Show current time
+        st.caption(f"🕐 Server Time: {get_local_time().strftime('%Y-%m-%d %H:%M:%S')} (WAT)")
 
 # ============== WORKHUB (EMPLOYEE PORTAL) ==============
 def workhub_dashboard():
     user = st.session_state.user
-    st.title("🧭 WorkHub - Employee Portal")
-    st.markdown(f"Welcome, **{user['full_name']}**")
     
-    tabs = st.tabs(["📝 Time Entry", "📊 My Dashboard", "🔄 Recall Requests", "📋 My History"])
+    # Header
+    st.markdown(f"""
+    <div style="padding: 10px 0;">
+        <h1>🧭 WorkHub</h1>
+        <p style="font-size: 1.1em;">Welcome back, <strong>{user['full_name']}</strong></p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Show recall window info
+    recall_window = int(get_setting('recall_window_hours') or 24)
+    st.info(f"⏰ **Recall Window:** You can recall submitted entries within **{recall_window} hours** of submission.")
+    
+    tabs = st.tabs(["📝 Project Time", "🏢 EE Internal", "📊 My Dashboard", "🔄 Recall Requests", "📋 My History"])
     
     with tabs[0]:
-        workhub_time_entry()
+        workhub_project_time_entry()
     with tabs[1]:
-        workhub_analytics()
+        workhub_ee_internal()
     with tabs[2]:
-        workhub_recalls()
+        workhub_analytics()
     with tabs[3]:
+        workhub_recalls()
+    with tabs[4]:
         workhub_history()
 
-def workhub_time_entry():
+def workhub_project_time_entry():
     user = st.session_state.user
     
-    st.subheader("Log Time Entry")
+    st.subheader("📝 Log Project Time")
     
     projects_df = execute_df("""
         SELECT p.id, p.name as project_name, c.name as client_name, c.id as client_id
         FROM projects p
         JOIN clients c ON p.client_id = c.id
         JOIN project_assignments pa ON p.id = pa.project_id
-        WHERE pa.employee_id = %s AND p.status = 'active'
+        WHERE pa.employee_id = %s AND p.status = 'active' AND c.name != 'EE Internal'
     """, (user['id'],))
     
     if projects_df.empty:
-        st.warning("You have no projects assigned. Contact your manager.")
+        st.warning("⚠️ You have no projects assigned. Contact your manager.")
         return
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        clients = projects_df['client_name'].unique().tolist()
-        selected_client = st.selectbox("Client", clients)
+    # Form layout
+    with st.container():
+        col1, col2 = st.columns(2)
         
-        client_projects = projects_df[projects_df['client_name'] == selected_client]
-        selected_project = st.selectbox("Project", client_projects['project_name'].tolist())
+        with col1:
+            st.markdown("##### 📁 Project Details")
+            clients = projects_df['client_name'].unique().tolist()
+            selected_client = st.selectbox("Client", clients, key="proj_client")
+            
+            client_projects = projects_df[projects_df['client_name'] == selected_client]
+            selected_project = st.selectbox("Project", client_projects['project_name'].tolist(), key="proj_project")
+            
+            project_id = int(client_projects[client_projects['project_name'] == selected_project]['id'].values[0])
+            
+            task_type = st.selectbox("Task Type", [
+                "Development", "Design", "Meeting", "Documentation", 
+                "Testing", "Support", "Research", "Other"
+            ], key="proj_task")
         
-        project_id = int(client_projects[client_projects['project_name'] == selected_project]['id'].values[0])
+        with col2:
+            st.markdown("##### ⏱️ Time Details")
+            entry_date = st.date_input("Date", datetime.date.today(), key="proj_date")
+            
+            hcol1, hcol2 = st.columns(2)
+            with hcol1:
+                hours = st.number_input("Hours", min_value=0, max_value=24, value=8, key="proj_hours")
+            with hcol2:
+                minutes = st.selectbox("Minutes", [0, 15, 30, 45], key="proj_mins")
+            
+            is_billable = st.checkbox("💰 Billable", value=True, key="proj_billable")
     
-    with col2:
-        entry_date = st.date_input("Date", datetime.date.today())
-        
-        hcol1, hcol2 = st.columns(2)
-        with hcol1:
-            hours = st.number_input("Hours", min_value=0, max_value=24, value=8)
-        with hcol2:
-            minutes = st.selectbox("Minutes", [0, 15, 30, 45])
+    st.markdown("##### 📝 Description")
+    description = st.text_area("What did you work on?", placeholder="Describe your work...", key="proj_desc", height=100)
     
-    task_type = st.selectbox("Task Type", ["Development", "Meeting", "Documentation", "Testing", "Support", "Training", "Other"])
-    is_billable = st.checkbox("Billable", value=True)
-    description = st.text_area("Description", placeholder="What did you work on?")
+    st.markdown("<br>", unsafe_allow_html=True)
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3 = st.columns([1, 1, 2])
     
     with col1:
         if st.button("💾 Save Draft", use_container_width=True):
-            save_time_entry(user['id'], project_id, entry_date, hours, minutes, description, task_type, is_billable, 'draft')
-            st.success("Draft saved!")
+            save_time_entry(user['id'], project_id, entry_date, hours, minutes, description, task_type, is_billable, 'draft', 'project_work', None)
+            st.success("✅ Draft saved!")
             st.rerun()
     
     with col2:
         if st.button("📤 Submit", use_container_width=True, type="primary"):
-            save_time_entry(user['id'], project_id, entry_date, hours, minutes, description, task_type, is_billable, 'submitted')
-            st.success("Entry submitted for approval!")
+            save_time_entry(user['id'], project_id, entry_date, hours, minutes, description, task_type, is_billable, 'submitted', 'project_work', None)
+            st.success("✅ Entry submitted for approval!")
             st.rerun()
     
+    # Show today's entries
     st.markdown("---")
-    st.subheader("Today's Entries")
+    st.markdown("##### 📋 Today's Entries")
     show_entries_table(user['id'], entry_date)
 
-def save_time_entry(employee_id, project_id, entry_date, hours, minutes, description, task_type, is_billable, status):
+def workhub_ee_internal():
+    user = st.session_state.user
+    
+    st.subheader("🏢 EE Internal Time")
+    st.markdown("Log time for internal company activities like Leave, Training, or Other Absences.")
+    
+    # Category selection with visual cards
+    st.markdown("##### Select Category")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    # Initialize session state for category selection
+    if 'ee_category' not in st.session_state:
+        st.session_state.ee_category = None
+    
+    with col1:
+        if st.button("🏖️ Leave", use_container_width=True, type="secondary" if st.session_state.ee_category != 'Leave' else "primary"):
+            st.session_state.ee_category = 'Leave'
+            st.rerun()
+        st.caption("Annual leave, sick leave, personal time off")
+    
+    with col2:
+        if st.button("📋 Other Absence", use_container_width=True, type="secondary" if st.session_state.ee_category != 'Other Absence' else "primary"):
+            st.session_state.ee_category = 'Other Absence'
+            st.rerun()
+        st.caption("Jury duty, bereavement, appointments")
+    
+    with col3:
+        if st.button("📚 Training", use_container_width=True, type="secondary" if st.session_state.ee_category != 'Training' else "primary"):
+            st.session_state.ee_category = 'Training'
+            st.rerun()
+        st.caption("Courses, workshops, certifications")
+    
+    # Show form based on selected category
+    if st.session_state.ee_category:
+        st.markdown("---")
+        st.markdown(f"##### 📝 {st.session_state.ee_category} Request")
+        
+        category = st.session_state.ee_category
+        
+        with st.container():
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**📅 Date Range**")
+                start_date = st.date_input("Start Date", datetime.date.today(), key="ee_start_date")
+                end_date = st.date_input("End Date", datetime.date.today(), key="ee_end_date")
+                
+                # Calculate total days
+                if end_date >= start_date:
+                    total_days = (end_date - start_date).days + 1
+                    st.info(f"📆 **Total Days:** {total_days} day(s)")
+                else:
+                    st.error("End date must be after start date")
+                    total_days = 0
+                
+                if category == 'Leave':
+                    leave_type = st.selectbox("Leave Type", [
+                        "Annual Leave", "Sick Leave", "Personal Leave", 
+                        "Maternity/Paternity Leave", "Unpaid Leave", "Compassionate Leave", "Other Leave"
+                    ], key="ee_leave_type")
+                    task_type = leave_type
+                elif category == 'Other Absence':
+                    absence_type = st.selectbox("Absence Type", [
+                        "Jury Duty", "Bereavement", "Medical Appointment",
+                        "Family Emergency", "Public Holiday", "Work From Home", "Other Absence"
+                    ], key="ee_absence_type")
+                    task_type = absence_type
+                else:  # Training
+                    training_type = st.selectbox("Training Type", [
+                        "Internal Training", "External Course", "Conference",
+                        "Workshop", "Certification", "Self-Study", "Onboarding", "Seminar"
+                    ], key="ee_training_type")
+                    task_type = training_type
+            
+            with col2:
+                st.markdown("**⏱️ Hours Per Day**")
+                hcol1, hcol2 = st.columns(2)
+                with hcol1:
+                    hours_per_day = st.number_input("Hours", min_value=0, max_value=24, value=8, key="ee_hours")
+                with hcol2:
+                    minutes_per_day = st.selectbox("Minutes", [0, 15, 30, 45], key="ee_mins")
+                
+                # Calculate total hours
+                total_hours = (hours_per_day + minutes_per_day/60) * total_days if total_days > 0 else 0
+                st.success(f"⏱️ **Total Hours:** {total_hours:.1f} hours")
+                
+                # Show info based on category
+                if category == 'Leave':
+                    st.warning("⚠️ Leave requests require manager approval.")
+                elif category == 'Other Absence':
+                    st.warning("⚠️ Please provide documentation if applicable.")
+                else:
+                    st.info("📌 Include training provider or course name in description.")
+        
+        st.markdown("##### 📝 Description / Reason")
+        
+        if category == 'Leave':
+            description = st.text_area("Leave details", placeholder="Reason for leave request, any handover notes, emergency contact if needed...", key="ee_desc", height=120)
+        elif category == 'Other Absence':
+            description = st.text_area("Absence details", placeholder="Explain the absence reason, provide any relevant details...", key="ee_desc", height=120)
+        else:
+            description = st.text_area("Training details", placeholder="Course name, provider, learning objectives, how it benefits your role...", key="ee_desc", height=120)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1, 1, 2])
+        
+        with col1:
+            if st.button("💾 Save Draft", use_container_width=True, key="ee_draft"):
+                if total_days > 0:
+                    save_ee_internal_entry(user['id'], start_date, end_date, hours_per_day, minutes_per_day, description, task_type, 'draft', category)
+                    st.success("✅ Draft saved!")
+                    st.rerun()
+                else:
+                    st.error("Invalid date range")
+        
+        with col2:
+            if st.button("📤 Submit Request", use_container_width=True, type="primary", key="ee_submit"):
+                if total_days > 0:
+                    if not description:
+                        st.error("Please provide a description/reason")
+                    else:
+                        save_ee_internal_entry(user['id'], start_date, end_date, hours_per_day, minutes_per_day, description, task_type, 'submitted', category)
+                        st.success("✅ Request submitted for approval!")
+                        st.rerun()
+                else:
+                    st.error("Invalid date range")
+        
+        # Show pending requests
+        st.markdown("---")
+        st.markdown("##### 📋 My EE Internal Requests")
+        my_requests = execute_df("""
+            SELECT te.id, te.entry_date as "Start Date", te.task_type as "Type",
+                   te.entry_category as "Category", te.hours as "Hours/Day",
+                   te.status as "Status", te.description as "Description",
+                   te.review_comment as "Manager Comment"
+            FROM time_entries te
+            WHERE te.employee_id = %s AND te.entry_type = 'ee_internal'
+            ORDER BY te.created_at DESC LIMIT 10
+        """, (user['id'],))
+        
+        if not my_requests.empty:
+            st.dataframe(my_requests, use_container_width=True, hide_index=True)
+        else:
+            st.info("No EE Internal requests yet")
+    else:
+        st.markdown("---")
+        st.info("👆 Select a category above to submit an EE Internal request.")
+
+def save_ee_internal_entry(employee_id, start_date, end_date, hours, minutes, description, task_type, status, entry_category):
+    """Save EE Internal entry with date range support"""
     conn = get_connection()
     try:
         with conn.cursor() as c:
-            local_time = get_local_time()
+            local_time = get_local_time_naive()
             submitted_at = local_time if status == 'submitted' else None
-            c.execute("""INSERT INTO time_entries (employee_id, project_id, entry_date, hours, minutes, description, task_type, is_billable, status, submitted_at, created_at, updated_at)
-                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                      (employee_id, project_id, entry_date, hours, minutes, description, task_type, is_billable, status, submitted_at, local_time, local_time))
+            
+            # Store the date range info in description
+            date_range_info = f"[{start_date} to {end_date}] "
+            full_description = date_range_info + (description or "")
+            
+            # Calculate total days
+            total_days = (end_date - start_date).days + 1
+            total_hours = hours * total_days + (minutes/60) * total_days
+            
+            c.execute("""INSERT INTO time_entries 
+                        (employee_id, project_id, entry_date, hours, minutes, description, task_type, 
+                         is_billable, status, submitted_at, created_at, updated_at, entry_type, entry_category)
+                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                      (employee_id, None, start_date, total_hours, 0, full_description, task_type, 
+                       False, status, submitted_at, local_time, local_time, 'ee_internal', entry_category))
+            entry_id = c.fetchone()[0]
+            conn.commit()
+            log_audit(employee_id, f"EE_INTERNAL_{status.upper()}", "time_entry", entry_id, f"{entry_category}: {task_type}")
+    finally:
+        release_connection(conn)
+
+def save_time_entry(employee_id, project_id, entry_date, hours, minutes, description, task_type, is_billable, status, entry_type, entry_category):
+    conn = get_connection()
+    try:
+        with conn.cursor() as c:
+            local_time = get_local_time_naive()
+            submitted_at = local_time if status == 'submitted' else None
+            c.execute("""INSERT INTO time_entries (employee_id, project_id, entry_date, hours, minutes, description, task_type, is_billable, status, submitted_at, created_at, updated_at, entry_type, entry_category)
+                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                      (employee_id, project_id, entry_date, hours, minutes, description, task_type, is_billable, status, submitted_at, local_time, local_time, entry_type, entry_category))
             entry_id = c.fetchone()[0]
             conn.commit()
             log_audit(employee_id, f"TIME_ENTRY_{status.upper()}", "time_entry", entry_id)
@@ -395,13 +610,16 @@ def save_time_entry(employee_id, project_id, entry_date, hours, minutes, descrip
 
 def show_entries_table(employee_id, date=None):
     query = """
-        SELECT te.id, c.name as "Client", p.name as "Project", te.entry_date as "Date",
+        SELECT te.id, 
+               COALESCE(c.name, 'EE Internal') as "Client", 
+               COALESCE(p.name, te.entry_category) as "Project/Category", 
+               te.entry_date as "Date",
                te.hours as "Hours", te.minutes as "Mins", te.task_type as "Task",
                CASE WHEN te.is_billable THEN 'Yes' ELSE 'No' END as "Billable",
-               te.status as "Status", te.description as "Description"
+               te.status as "Status"
         FROM time_entries te
-        JOIN projects p ON te.project_id = p.id
-        JOIN clients c ON p.client_id = c.id
+        LEFT JOIN projects p ON te.project_id = p.id
+        LEFT JOIN clients c ON p.client_id = c.id
         WHERE te.employee_id = %s
     """
     params = [employee_id]
@@ -415,12 +633,12 @@ def show_entries_table(employee_id, date=None):
     if not df.empty:
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
-        st.info("No entries found")
+        st.info("📭 No entries found")
 
 def workhub_analytics():
     user = st.session_state.user
     
-    st.subheader("My Analytics")
+    st.subheader("📊 My Dashboard")
     
     today = datetime.date.today()
     week_start = today - timedelta(days=today.weekday())
@@ -434,17 +652,21 @@ def workhub_analytics():
         WHERE employee_id = %s AND entry_date >= %s AND status != 'draft'
     """, (user['id'], week_start))
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     total_h = float(summary['total_hours'].iloc[0] or 0)
     billable_h = float(summary['billable_hours'].iloc[0] or 0)
     
-    col1.metric("This Week Total", f"{total_h:.1f} hrs")
-    col2.metric("Billable Hours", f"{billable_h:.1f} hrs")
-    col3.metric("Utilization", f"{(billable_h/total_h*100) if total_h > 0 else 0:.0f}%")
+    col1.metric("📅 This Week", f"{total_h:.1f} hrs")
+    col2.metric("💰 Billable", f"{billable_h:.1f} hrs")
+    col3.metric("📈 Utilization", f"{(billable_h/total_h*100) if total_h > 0 else 0:.0f}%")
+    col4.metric("📝 Entries", int(summary['entry_count'].iloc[0] or 0))
+    
+    st.markdown("---")
     
     col1, col2 = st.columns(2)
     
     with col1:
+        st.markdown("##### Billable vs Non-Billable (30 Days)")
         pie_data = execute_df("""
             SELECT 
                 CASE WHEN is_billable THEN 'Billable' ELSE 'Non-Billable' END as "Type",
@@ -455,10 +677,15 @@ def workhub_analytics():
         """, (user['id'],))
         
         if not pie_data.empty:
-            fig = px.pie(pie_data, values='Hours', names='Type', title='Last 30 Days - Billable vs Non-Billable')
+            fig = px.pie(pie_data, values='Hours', names='Type', 
+                        color_discrete_sequence=['#00CC96', '#EF553B'])
+            fig.update_layout(margin=dict(t=20, b=20, l=20, r=20))
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No data available")
     
     with col2:
+        st.markdown("##### Daily Hours (14 Days)")
         daily_data = execute_df("""
             SELECT entry_date as "Date", SUM(hours + minutes/60.0) as "Hours"
             FROM time_entries
@@ -467,89 +694,143 @@ def workhub_analytics():
         """, (user['id'],))
         
         if not daily_data.empty:
-            fig = px.bar(daily_data, x='Date', y='Hours', title='Last 14 Days - Daily Hours')
-            fig.add_hline(y=8, line_dash="dash", line_color="red", annotation_text="Target")
+            fig = px.bar(daily_data, x='Date', y='Hours', color_discrete_sequence=['#636EFA'])
+            fig.add_hline(y=8, line_dash="dash", line_color="red", annotation_text="Target (8h)")
+            fig.update_layout(margin=dict(t=20, b=20, l=20, r=20))
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No data available")
 
 def workhub_recalls():
     user = st.session_state.user
     
-    st.subheader("Recall Requests")
+    st.subheader("🔄 Recall Requests")
     
     recall_window = int(get_setting('recall_window_hours') or 24)
     cutoff = get_local_time() - timedelta(hours=recall_window)
     
+    # Show recall window info prominently
+    st.markdown(f"""
+    <div style="padding: 15px; border-radius: 10px; border-left: 4px solid #1f77b4; margin-bottom: 20px;">
+        <strong>⏰ Recall Window: {recall_window} hours</strong><br>
+        <small>You can recall entries submitted after: {cutoff.strftime('%Y-%m-%d %H:%M:%S')}</small>
+    </div>
+    """, unsafe_allow_html=True)
+    
     recallable = execute_df("""
-        SELECT te.id, c.name as "Client", p.name as "Project", te.entry_date as "Date",
+        SELECT te.id, 
+               COALESCE(c.name, 'EE Internal') as "Client", 
+               COALESCE(p.name, te.entry_category) as "Project", 
+               te.entry_date as "Date",
                te.hours as "Hours", te.status as "Status", te.submitted_at
         FROM time_entries te
-        JOIN projects p ON te.project_id = p.id
-        JOIN clients c ON p.client_id = c.id
+        LEFT JOIN projects p ON te.project_id = p.id
+        LEFT JOIN clients c ON p.client_id = c.id
         WHERE te.employee_id = %s AND te.status = 'submitted' AND te.submitted_at > %s
     """, (user['id'], cutoff))
     
     if not recallable.empty:
-        st.markdown("**Entries eligible for recall:**")
+        st.markdown("##### ✅ Entries You Can Recall")
         for _, row in recallable.iterrows():
-            col1, col2 = st.columns([4, 1])
-            col1.write(f"{row['Date']} | {row['Client']} - {row['Project']} | {row['Hours']}h")
-            if col2.button("🔄 Recall", key=f"recall_{row['id']}"):
-                conn = get_connection()
-                try:
-                    with conn.cursor() as c:
-                        c.execute("UPDATE time_entries SET status='recalled' WHERE id=%s", (row['id'],))
-                        conn.commit()
-                finally:
-                    release_connection(conn)
-                log_audit(user['id'], "RECALL_ENTRY", "time_entry", row['id'])
-                st.success("Entry recalled!")
-                st.rerun()
+            with st.container():
+                col1, col2, col3 = st.columns([3, 1, 1])
+                col1.write(f"**{row['Date']}** | {row['Client']} - {row['Project']} | {row['Hours']}h")
+                
+                # Calculate time remaining
+                if row['submitted_at']:
+                    submitted_time = row['submitted_at']
+                    if submitted_time.tzinfo is None:
+                        submitted_time = pytz.utc.localize(submitted_time)
+                    deadline = submitted_time + timedelta(hours=recall_window)
+                    time_left = deadline - get_local_time()
+                    hours_left = max(0, time_left.total_seconds() / 3600)
+                    col2.caption(f"⏳ {hours_left:.1f}h left")
+                
+                if col3.button("🔄 Recall", key=f"recall_{row['id']}"):
+                    conn = get_connection()
+                    try:
+                        with conn.cursor() as c:
+                            c.execute("UPDATE time_entries SET status='recalled', updated_at=%s WHERE id=%s", (get_local_time(), row['id']))
+                            conn.commit()
+                    finally:
+                        release_connection(conn)
+                    log_audit(user['id'], "RECALL_ENTRY", "time_entry", row['id'])
+                    st.success("✅ Entry recalled!")
+                    st.rerun()
+                st.markdown("---")
     else:
-        st.info(f"No entries eligible for recall. Recall window is {recall_window} hours.")
+        st.info(f"📭 No entries eligible for recall. Entries must be submitted within the last {recall_window} hours.")
     
-    st.markdown("---")
-    st.markdown("**My Recall Requests:**")
-    requests = execute_df("""
-        SELECT rr.id, te.entry_date, rr.reason, rr.status, rr.requested_at
-        FROM recall_requests rr
-        JOIN time_entries te ON rr.time_entry_id = te.id
-        WHERE rr.employee_id = %s
-        ORDER BY rr.requested_at DESC LIMIT 10
+    # Show recall history
+    st.markdown("##### 📜 My Recall History")
+    history = execute_df("""
+        SELECT te.entry_date as "Date", 
+               COALESCE(p.name, te.entry_category) as "Project",
+               te.hours as "Hours",
+               te.status as "Current Status",
+               te.updated_at as "Last Updated"
+        FROM time_entries te
+        LEFT JOIN projects p ON te.project_id = p.id
+        WHERE te.employee_id = %s AND te.status = 'recalled'
+        ORDER BY te.updated_at DESC LIMIT 10
     """, (user['id'],))
     
-    if not requests.empty:
-        st.dataframe(requests, use_container_width=True, hide_index=True)
+    if not history.empty:
+        st.dataframe(history, use_container_width=True, hide_index=True)
     else:
-        st.info("No recall requests")
+        st.caption("No recalled entries")
 
 def workhub_history():
     user = st.session_state.user
-    st.subheader("My Time Entry History")
+    st.subheader("📋 My Time Entry History")
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
         start_date = st.date_input("From", datetime.date.today() - timedelta(days=30), key="hist_start")
     with col2:
         end_date = st.date_input("To", datetime.date.today(), key="hist_end")
+    with col3:
+        status_filter = st.selectbox("Status", ["All", "draft", "submitted", "approved", "rejected", "recalled"], key="hist_status")
     
-    df = execute_df("""
-        SELECT te.entry_date as "Date", c.name as "Client", p.name as "Project",
+    query = """
+        SELECT te.entry_date as "Date", 
+               COALESCE(c.name, 'EE Internal') as "Client", 
+               COALESCE(p.name, te.entry_category) as "Project",
                te.hours as "Hours", te.minutes as "Mins", te.task_type as "Task",
                CASE WHEN te.is_billable THEN 'Yes' ELSE 'No' END as "Billable",
                te.status as "Status", te.review_comment as "Comment"
         FROM time_entries te
-        JOIN projects p ON te.project_id = p.id
-        JOIN clients c ON p.client_id = c.id
+        LEFT JOIN projects p ON te.project_id = p.id
+        LEFT JOIN clients c ON p.client_id = c.id
         WHERE te.employee_id = %s AND te.entry_date BETWEEN %s AND %s
-        ORDER BY te.entry_date DESC
-    """, (user['id'], start_date, end_date))
+    """
+    params = [user['id'], start_date, end_date]
+    
+    if status_filter != "All":
+        query += " AND te.status = %s"
+        params.append(status_filter)
+    
+    query += " ORDER BY te.entry_date DESC"
+    
+    df = execute_df(query, tuple(params))
     
     if not df.empty:
+        # Summary stats
+        total_hours = df['Hours'].sum() + df['Mins'].sum() / 60
+        approved_df = df[df['Status'] == 'approved']
+        approved_hours = approved_df['Hours'].sum() + approved_df['Mins'].sum() / 60 if not approved_df.empty else 0
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Entries", len(df))
+        col2.metric("Total Hours", f"{total_hours:.1f}")
+        col3.metric("Approved Hours", f"{approved_hours:.1f}")
+        
         st.dataframe(df, use_container_width=True, hide_index=True)
+        
         csv = df.to_csv(index=False)
         st.download_button("📥 Download CSV", csv, "my_timesheet.csv", "text/csv")
     else:
-        st.info("No entries found for selected period")
+        st.info("📭 No entries found for selected period")
 
 # ============== MANAGE360 (MANAGER PORTAL) ==============
 def manage360_dashboard():
@@ -573,10 +854,166 @@ def manage360_dashboard():
 def manage360_review_queue():
     user = st.session_state.user
     
-    st.subheader("Pending Reviews")
+    st.subheader("📋 Pending Reviews")
+    
+    # Tabs for different request types
+    review_tabs = st.tabs(["📁 All Pending", "🏢 EE Internal Requests", "📝 Project Time"])
+    
+    with review_tabs[0]:
+        show_all_pending_reviews(user)
+    
+    with review_tabs[1]:
+        show_ee_internal_reviews(user)
+    
+    with review_tabs[2]:
+        show_project_time_reviews(user)
+
+def show_all_pending_reviews(user):
+    """Show all pending reviews"""
+    pending = execute_df("""
+        SELECT te.id, u.full_name as "Employee", 
+               COALESCE(c.name, 'EE Internal') as "Client", 
+               COALESCE(p.name, te.entry_category) as "Project/Category",
+               te.entry_date as "Date", te.hours as "Hours", te.minutes as "Mins",
+               te.task_type as "Type", te.description as "Description",
+               CASE WHEN te.is_billable THEN 'Yes' ELSE 'No' END as "Billable",
+               te.submitted_at as "Submitted",
+               te.entry_type as "Entry_Type",
+               te.entry_category as "Category"
+        FROM time_entries te
+        JOIN users u ON te.employee_id = u.id
+        LEFT JOIN projects p ON te.project_id = p.id
+        LEFT JOIN clients c ON p.client_id = c.id
+        WHERE te.status = 'submitted' 
+        AND (p.manager_id = %s OR %s IN (SELECT id FROM users WHERE role IN ('manager', 'admin')))
+        ORDER BY te.submitted_at ASC
+    """, (user['id'], user['id']))
+    
+    if pending.empty:
+        st.success("🎉 No pending reviews! All caught up.")
+        return
+    
+    st.info(f"📬 **{len(pending)}** total entries awaiting review")
+    
+    for _, row in pending.iterrows():
+        entry_type_icon = "🏢" if row['Entry_Type'] == 'ee_internal' else "📁"
+        entry_label = f"{row['Category']}" if row['Entry_Type'] == 'ee_internal' else "Project Work"
+        
+        with st.expander(f"{entry_type_icon} {row['Employee']} | {row['Date']} | {row['Project/Category']} ({row['Hours']:.1f}h) - {entry_label}"):
+            col1, col2 = st.columns(2)
+            col1.write(f"**Client/Type:** {row['Client']}")
+            col1.write(f"**Task:** {row['Type']}")
+            col1.write(f"**Request Type:** {entry_label}")
+            col2.write(f"**Billable:** {row['Billable']}")
+            col2.write(f"**Submitted:** {row['Submitted']}")
+            col2.write(f"**Total Hours:** {row['Hours']:.1f}h")
+            
+            st.write(f"**Description/Reason:** {row['Description'] or 'N/A'}")
+            
+            comment = st.text_input("Manager Comment", placeholder="Add approval/denial reason...", key=f"comment_{row['id']}")
+            
+            col1, col2, col3 = st.columns(3)
+            if col1.button("✅ Approve", key=f"approve_{row['id']}", type="primary"):
+                update_entry_status(row['id'], 'approved', user['id'], comment)
+                st.success("✅ Approved!")
+                st.rerun()
+            if col2.button("❌ Deny", key=f"reject_{row['id']}"):
+                if not comment:
+                    st.error("Please provide a reason for denial")
+                else:
+                    update_entry_status(row['id'], 'rejected', user['id'], comment)
+                    st.warning("❌ Denied")
+                    st.rerun()
+
+def show_ee_internal_reviews(user):
+    """Show only EE Internal requests (Leave, Training, Absence)"""
+    st.markdown("### 🏢 EE Internal Requests")
+    st.markdown("Review and approve/deny Leave, Training, and Other Absence requests.")
     
     pending = execute_df("""
-        SELECT te.id, u.full_name as "Employee", c.name as "Client", p.name as "Project",
+        SELECT te.id, u.full_name as "Employee", u.department as "Department",
+               te.entry_category as "Category", te.task_type as "Request Type",
+               te.entry_date as "Start Date", te.hours as "Total Hours",
+               te.description as "Description/Reason",
+               te.submitted_at as "Submitted"
+        FROM time_entries te
+        JOIN users u ON te.employee_id = u.id
+        WHERE te.status = 'submitted' AND te.entry_type = 'ee_internal'
+        ORDER BY te.submitted_at ASC
+    """)
+    
+    if pending.empty:
+        st.success("🎉 No pending EE Internal requests!")
+        return
+    
+    # Summary cards
+    leave_count = len(pending[pending['Category'] == 'Leave'])
+    training_count = len(pending[pending['Category'] == 'Training'])
+    absence_count = len(pending[pending['Category'] == 'Other Absence'])
+    
+    col1, col2, col3 = st.columns(3)
+    col1.metric("🏖️ Leave Requests", leave_count)
+    col2.metric("📚 Training Requests", training_count)
+    col3.metric("📋 Other Absences", absence_count)
+    
+    st.markdown("---")
+    
+    for _, row in pending.iterrows():
+        # Color code by category
+        if row['Category'] == 'Leave':
+            icon = "🏖️"
+            color = "🟡"
+        elif row['Category'] == 'Training':
+            icon = "📚"
+            color = "🔵"
+        else:
+            icon = "📋"
+            color = "🟠"
+        
+        with st.expander(f"{icon} {row['Employee']} - {row['Request Type']} ({row['Total Hours']:.1f}h)"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write(f"**👤 Employee:** {row['Employee']}")
+                st.write(f"**🏢 Department:** {row['Department']}")
+                st.write(f"**📁 Category:** {row['Category']}")
+                st.write(f"**📝 Type:** {row['Request Type']}")
+            
+            with col2:
+                st.write(f"**📅 Start Date:** {row['Start Date']}")
+                st.write(f"**⏱️ Total Hours:** {row['Total Hours']:.1f} hours")
+                st.write(f"**📤 Submitted:** {row['Submitted']}")
+            
+            st.markdown("**📝 Description/Reason:**")
+            st.info(row['Description/Reason'] or 'No description provided')
+            
+            st.markdown("---")
+            comment = st.text_input("Manager Decision Comment", placeholder="Reason for approval/denial...", key=f"ee_comment_{row['id']}")
+            
+            col1, col2, col3 = st.columns([1, 1, 2])
+            
+            with col1:
+                if st.button("✅ Approve Request", key=f"ee_approve_{row['id']}", type="primary", use_container_width=True):
+                    update_entry_status(row['id'], 'approved', user['id'], comment or "Approved")
+                    st.success(f"✅ {row['Request Type']} request approved!")
+                    st.rerun()
+            
+            with col2:
+                if st.button("❌ Deny Request", key=f"ee_reject_{row['id']}", use_container_width=True):
+                    if not comment:
+                        st.error("⚠️ Please provide a reason for denial")
+                    else:
+                        update_entry_status(row['id'], 'rejected', user['id'], comment)
+                        st.warning(f"❌ {row['Request Type']} request denied")
+                        st.rerun()
+
+def show_project_time_reviews(user):
+    """Show only project time entries"""
+    st.markdown("### 📁 Project Time Entries")
+    
+    pending = execute_df("""
+        SELECT te.id, u.full_name as "Employee", 
+               c.name as "Client", p.name as "Project",
                te.entry_date as "Date", te.hours as "Hours", te.minutes as "Mins",
                te.task_type as "Task", te.description as "Description",
                CASE WHEN te.is_billable THEN 'Yes' ELSE 'No' END as "Billable",
@@ -585,36 +1022,37 @@ def manage360_review_queue():
         JOIN users u ON te.employee_id = u.id
         JOIN projects p ON te.project_id = p.id
         JOIN clients c ON p.client_id = c.id
-        WHERE te.status = 'submitted' 
+        WHERE te.status = 'submitted' AND te.entry_type = 'project_work'
         AND (p.manager_id = %s OR %s IN (SELECT id FROM users WHERE role IN ('manager', 'admin')))
         ORDER BY te.submitted_at ASC
     """, (user['id'], user['id']))
     
     if pending.empty:
-        st.success("🎉 No pending reviews!")
+        st.success("🎉 No pending project time entries!")
         return
     
-    st.info(f"**{len(pending)}** entries awaiting review")
+    st.info(f"📬 **{len(pending)}** project entries awaiting review")
     
     for _, row in pending.iterrows():
-        with st.expander(f"📝 {row['Employee']} | {row['Date']} | {row['Project']} ({row['Hours']}h {row['Mins']}m)"):
+        with st.expander(f"📁 {row['Employee']} | {row['Date']} | {row['Project']} ({row['Hours']}h {row['Mins']}m)"):
             col1, col2 = st.columns(2)
             col1.write(f"**Client:** {row['Client']}")
+            col1.write(f"**Project:** {row['Project']}")
             col1.write(f"**Task:** {row['Task']}")
             col2.write(f"**Billable:** {row['Billable']}")
             col2.write(f"**Submitted:** {row['Submitted']}")
             st.write(f"**Description:** {row['Description'] or 'N/A'}")
             
-            comment = st.text_input("Comment (optional)", key=f"comment_{row['id']}")
+            comment = st.text_input("Comment", key=f"proj_comment_{row['id']}")
             
             col1, col2, col3 = st.columns(3)
-            if col1.button("✅ Approve", key=f"approve_{row['id']}", type="primary"):
+            if col1.button("✅ Approve", key=f"proj_approve_{row['id']}", type="primary"):
                 update_entry_status(row['id'], 'approved', user['id'], comment)
-                st.success("Approved!")
+                st.success("✅ Approved!")
                 st.rerun()
-            if col2.button("❌ Reject", key=f"reject_{row['id']}"):
+            if col2.button("❌ Reject", key=f"proj_reject_{row['id']}"):
                 update_entry_status(row['id'], 'rejected', user['id'], comment)
-                st.warning("Rejected")
+                st.warning("❌ Rejected")
                 st.rerun()
 
 def update_entry_status(entry_id, status, reviewer_id, comment=None):
@@ -630,7 +1068,7 @@ def update_entry_status(entry_id, status, reviewer_id, comment=None):
     log_audit(reviewer_id, f"ENTRY_{status.upper()}", "time_entry", entry_id, comment)
 
 def manage360_approvals():
-    st.subheader("Approval History")
+    st.subheader("✅ Approval History")
     
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -641,12 +1079,14 @@ def manage360_approvals():
         end = st.date_input("To", datetime.date.today(), key="appr_end")
     
     query = """
-        SELECT te.id, u.full_name as "Employee", p.name as "Project", te.entry_date as "Date",
+        SELECT te.id, u.full_name as "Employee", 
+               COALESCE(p.name, te.entry_category) as "Project", 
+               te.entry_date as "Date",
                te.hours as "Hours", te.status as "Status", r.full_name as "Reviewer",
                te.reviewed_at as "Reviewed", te.review_comment as "Comment"
         FROM time_entries te
         JOIN users u ON te.employee_id = u.id
-        JOIN projects p ON te.project_id = p.id
+        LEFT JOIN projects p ON te.project_id = p.id
         LEFT JOIN users r ON te.reviewed_by = r.id
         WHERE te.status IN ('approved', 'rejected') AND te.entry_date BETWEEN %s AND %s
     """
@@ -663,10 +1103,10 @@ def manage360_approvals():
     if not df.empty:
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
-        st.info("No approval history found")
+        st.info("📭 No approval history found")
 
 def manage360_team():
-    st.subheader("Team Overview")
+    st.subheader("👥 Team Overview")
     
     team = execute_df("""
         SELECT u.id, u.full_name as "Name", u.email as "Email", u.department as "Department",
@@ -695,11 +1135,11 @@ def manage360_team():
         """)
         
         if not overtime.empty:
-            st.warning(f"⚠️ Overtime Alerts (>{overtime_threshold}h/day)")
+            st.warning(f"⚠️ **Overtime Alerts** (>{overtime_threshold}h/day)")
             st.dataframe(overtime, use_container_width=True, hide_index=True)
 
 def manage360_analytics():
-    st.subheader("Team Analytics")
+    st.subheader("📊 Team Analytics")
     
     col1, col2, col3, col4 = st.columns(4)
     
@@ -713,17 +1153,20 @@ def manage360_analytics():
         WHERE entry_date >= CURRENT_DATE - INTERVAL '30 days'
     """)
     
-    col1.metric("Active Employees", int(metrics['employees'].iloc[0] or 0))
-    col2.metric("Pending Reviews", int(metrics['pending'].iloc[0] or 0))
-    col3.metric("Billable Hours (30d)", f"{float(metrics['billable'].iloc[0] or 0):.0f}h")
+    col1.metric("👥 Active Employees", int(metrics['employees'].iloc[0] or 0))
+    col2.metric("📋 Pending Reviews", int(metrics['pending'].iloc[0] or 0))
+    col3.metric("💰 Billable (30d)", f"{float(metrics['billable'].iloc[0] or 0):.0f}h")
     total_val = float(metrics['total'].iloc[0] or 0)
     billable_val = float(metrics['billable'].iloc[0] or 0)
     util = (billable_val / total_val * 100) if total_val > 0 else 0
-    col4.metric("Utilization", f"{util:.0f}%")
+    col4.metric("📈 Utilization", f"{util:.0f}%")
+    
+    st.markdown("---")
     
     col1, col2 = st.columns(2)
     
     with col1:
+        st.markdown("##### Top Projects (30 Days)")
         proj_data = execute_df("""
             SELECT p.name as "Project", SUM(te.hours) as "Hours"
             FROM time_entries te
@@ -733,10 +1176,14 @@ def manage360_analytics():
         """)
         
         if not proj_data.empty:
-            fig = px.bar(proj_data, x='Project', y='Hours', title='Top Projects (30 Days)')
+            fig = px.bar(proj_data, x='Project', y='Hours', color_discrete_sequence=['#636EFA'])
+            fig.update_layout(margin=dict(t=20, b=20, l=20, r=20))
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No data available")
     
     with col2:
+        st.markdown("##### Top Contributors (30 Days)")
         emp_data = execute_df("""
             SELECT u.full_name as "Employee", SUM(te.hours) as "Hours"
             FROM time_entries te
@@ -746,18 +1193,21 @@ def manage360_analytics():
         """)
         
         if not emp_data.empty:
-            fig = px.bar(emp_data, x='Employee', y='Hours', title='Top Contributors (30 Days)')
+            fig = px.bar(emp_data, x='Employee', y='Hours', color_discrete_sequence=['#00CC96'])
+            fig.update_layout(margin=dict(t=20, b=20, l=20, r=20))
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No data available")
 
 def manage360_projects():
-    st.subheader("Project Management")
+    st.subheader("📁 Project Management")
     
     with st.expander("➕ Create New Project"):
-        clients = execute_df("SELECT id, name FROM clients WHERE is_active=TRUE")
+        clients = execute_df("SELECT id, name FROM clients WHERE is_active=TRUE AND name != 'EE Internal'")
         managers = execute_df("SELECT id, full_name FROM users WHERE role IN ('manager', 'admin') AND is_active=TRUE")
         
         if clients.empty:
-            st.warning("Create a client first in TechCore")
+            st.warning("⚠️ Create a client first in TechCore")
         else:
             col1, col2 = st.columns(2)
             with col1:
@@ -767,7 +1217,7 @@ def manage360_projects():
                 new_manager = st.selectbox("Project Manager", managers['full_name'].tolist(), key="new_proj_mgr")
                 new_proj_desc = st.text_input("Description", key="new_proj_desc")
             
-            if st.button("Create Project"):
+            if st.button("Create Project", type="primary"):
                 if new_proj_name:
                     client_id = int(clients[clients['name'] == new_client]['id'].values[0])
                     manager_id = int(managers[managers['full_name'] == new_manager]['id'].values[0])
@@ -781,7 +1231,7 @@ def manage360_projects():
                     finally:
                         release_connection(conn)
                     log_audit(st.session_state.user['id'], "CREATE_PROJECT", "project", proj_id)
-                    st.success("Project created!")
+                    st.success("✅ Project created!")
                     st.rerun()
     
     projects = execute_df("""
@@ -793,6 +1243,7 @@ def manage360_projects():
         LEFT JOIN users u ON p.manager_id = u.id
         LEFT JOIN project_assignments pa ON p.id = pa.project_id
         LEFT JOIN time_entries te ON p.id = te.project_id AND te.status = 'approved'
+        WHERE c.name != 'EE Internal'
         GROUP BY p.id, c.name, p.name, u.full_name, p.status
         ORDER BY p.created_at DESC
     """)
@@ -801,7 +1252,7 @@ def manage360_projects():
         st.dataframe(projects, use_container_width=True, hide_index=True)
         
         st.markdown("---")
-        st.markdown("**Assign Employee to Project**")
+        st.markdown("##### 👤 Assign Employee to Project")
         col1, col2, col3 = st.columns([2, 2, 1])
         
         employees = execute_df("SELECT id, full_name FROM users WHERE role='employee' AND is_active=TRUE")
@@ -817,7 +1268,7 @@ def manage360_projects():
         with col3:
             st.write("")
             st.write("")
-            if assign_emp and st.button("Assign"):
+            if assign_emp and st.button("Assign", type="primary"):
                 proj_id = int(projects[projects['Project'] == assign_proj]['id'].values[0])
                 emp_id = int(employees[employees['full_name'] == assign_emp]['id'].values[0])
                 conn = get_connection()
@@ -825,7 +1276,7 @@ def manage360_projects():
                     with conn.cursor() as c:
                         c.execute("INSERT INTO project_assignments (project_id, employee_id) VALUES (%s, %s) ON CONFLICT DO NOTHING", (proj_id, emp_id))
                         conn.commit()
-                    st.success(f"Assigned {assign_emp} to {assign_proj}")
+                    st.success(f"✅ Assigned {assign_emp} to {assign_proj}")
                     st.rerun()
                 except Exception as e:
                     st.warning(f"Could not assign: {e}")
@@ -856,7 +1307,7 @@ def techcore_dashboard():
         techcore_audit()
 
 def techcore_users():
-    st.subheader("User Management")
+    st.subheader("👥 User Management")
     
     with st.expander("➕ Add New User", expanded=False):
         col1, col2 = st.columns(2)
@@ -881,14 +1332,14 @@ def techcore_users():
                         user_id = c.fetchone()[0]
                         conn.commit()
                     log_audit(st.session_state.user['id'], "CREATE_USER", "user", user_id)
-                    st.success(f"User '{new_username}' created successfully!")
+                    st.success(f"✅ User '{new_username}' created!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
                 finally:
                     release_connection(conn)
             else:
-                st.warning("Username, password, and full name are required")
+                st.warning("⚠️ Username, password, and full name are required")
     
     users = execute_df("""
         SELECT id, username as "Username", full_name as "Name", email as "Email", 
@@ -901,7 +1352,7 @@ def techcore_users():
     st.dataframe(users, use_container_width=True, hide_index=True)
     
     st.markdown("---")
-    st.markdown("**Edit User**")
+    st.markdown("##### ✏️ Edit User")
     col1, col2 = st.columns(2)
     
     with col1:
@@ -922,7 +1373,7 @@ def techcore_users():
                 finally:
                     release_connection(conn)
                 log_audit(st.session_state.user['id'], "RESET_PASSWORD", "user", user_id)
-                st.success("Password reset!")
+                st.success("✅ Password reset!")
     elif action == "Toggle Active":
         if st.button("Toggle Status"):
             conn = get_connection()
@@ -933,7 +1384,7 @@ def techcore_users():
             finally:
                 release_connection(conn)
             log_audit(st.session_state.user['id'], "TOGGLE_USER_STATUS", "user", user_id)
-            st.success("Status toggled!")
+            st.success("✅ Status toggled!")
             st.rerun()
     elif action == "Change Role":
         new_role = st.selectbox("New Role", ["employee", "manager", "admin"], key="change_role")
@@ -946,22 +1397,19 @@ def techcore_users():
             finally:
                 release_connection(conn)
             log_audit(st.session_state.user['id'], "CHANGE_ROLE", "user", user_id, new_role)
-            st.success("Role updated!")
+            st.success("✅ Role updated!")
             st.rerun()
     elif action == "🗑️ Delete User":
-        st.warning(f"⚠️ You are about to permanently delete user: **{edit_user}**")
-        st.caption("This will also delete all their time entries and project assignments.")
-        
+        st.warning(f"⚠️ Permanently delete user: **{edit_user}**")
         if edit_user == "admin":
             st.error("❌ Cannot delete the main admin account!")
         else:
-            confirm = st.text_input("Type the username to confirm deletion:", key="confirm_delete")
+            confirm = st.text_input("Type username to confirm:", key="confirm_delete")
             if st.button("🗑️ Permanently Delete", type="primary"):
                 if confirm == edit_user:
                     conn = get_connection()
                     try:
                         with conn.cursor() as c:
-                            # Delete related records first
                             c.execute("DELETE FROM time_entries WHERE employee_id=%s", (user_id,))
                             c.execute("DELETE FROM project_assignments WHERE employee_id=%s", (user_id,))
                             c.execute("DELETE FROM recall_requests WHERE employee_id=%s", (user_id,))
@@ -970,13 +1418,13 @@ def techcore_users():
                     finally:
                         release_connection(conn)
                     log_audit(st.session_state.user['id'], "DELETE_USER", "user", user_id, edit_user)
-                    st.success(f"✅ User '{edit_user}' deleted permanently!")
+                    st.success(f"✅ User '{edit_user}' deleted!")
                     st.rerun()
                 else:
-                    st.error("Username doesn't match. Deletion cancelled.")
+                    st.error("Username doesn't match.")
 
 def techcore_clients():
-    st.subheader("Client Management")
+    st.subheader("🏢 Client Management")
     
     with st.expander("➕ Add New Client"):
         col1, col2 = st.columns(2)
@@ -994,7 +1442,7 @@ def techcore_clients():
                         client_id = c.fetchone()[0]
                         conn.commit()
                     log_audit(st.session_state.user['id'], "CREATE_CLIENT", "client", client_id)
-                    st.success("Client added!")
+                    st.success("✅ Client added!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error: {e}")
@@ -1015,10 +1463,9 @@ def techcore_clients():
     
     st.dataframe(clients, use_container_width=True, hide_index=True)
     
-    # Delete Client Section
     if not clients.empty:
         st.markdown("---")
-        st.markdown("**Manage Client**")
+        st.markdown("##### ✏️ Manage Client")
         col1, col2 = st.columns(2)
         
         with col1:
@@ -1036,45 +1483,35 @@ def techcore_clients():
                         conn.commit()
                 finally:
                     release_connection(conn)
-                log_audit(st.session_state.user['id'], "TOGGLE_CLIENT_STATUS", "client", client_id)
-                st.success("Client status toggled!")
+                st.success("✅ Status toggled!")
                 st.rerun()
         
         elif client_action == "🗑️ Delete Client":
-            st.warning(f"⚠️ You are about to permanently delete client: **{selected_client}**")
-            st.caption("This will also delete all projects and time entries under this client.")
-            
-            confirm = st.text_input("Type the client name to confirm deletion:", key="confirm_delete_client")
+            st.warning(f"⚠️ Permanently delete client: **{selected_client}**")
+            confirm = st.text_input("Type client name to confirm:", key="confirm_delete_client")
             if st.button("🗑️ Permanently Delete Client", type="primary"):
                 if confirm == selected_client:
                     conn = get_connection()
                     try:
                         with conn.cursor() as c:
-                            # Get all projects under this client
                             c.execute("SELECT id FROM projects WHERE client_id=%s", (client_id,))
                             project_ids = [row[0] for row in c.fetchall()]
-                            
-                            # Delete time entries for those projects
                             for pid in project_ids:
                                 c.execute("DELETE FROM time_entries WHERE project_id=%s", (pid,))
                                 c.execute("DELETE FROM project_assignments WHERE project_id=%s", (pid,))
-                            
-                            # Delete projects
                             c.execute("DELETE FROM projects WHERE client_id=%s", (client_id,))
-                            
-                            # Delete client
                             c.execute("DELETE FROM clients WHERE id=%s", (client_id,))
                             conn.commit()
                     finally:
                         release_connection(conn)
-                    log_audit(st.session_state.user['id'], "DELETE_CLIENT", "client", client_id, selected_client)
-                    st.success(f"✅ Client '{selected_client}' deleted permanently!")
+                    log_audit(st.session_state.user['id'], "DELETE_CLIENT", "client", client_id)
+                    st.success(f"✅ Client '{selected_client}' deleted!")
                     st.rerun()
                 else:
-                    st.error("Client name doesn't match. Deletion cancelled.")
+                    st.error("Client name doesn't match.")
 
 def techcore_projects_admin():
-    st.subheader("All Projects")
+    st.subheader("📁 All Projects")
     
     projects = execute_df("""
         SELECT p.id, c.name as "Client", p.name as "Project", u.full_name as "Manager",
@@ -1094,7 +1531,7 @@ def techcore_projects_admin():
     
     if not projects.empty:
         st.markdown("---")
-        st.markdown("**Manage Project**")
+        st.markdown("##### ✏️ Manage Project")
         col1, col2 = st.columns(2)
         
         with col1:
@@ -1113,15 +1550,12 @@ def techcore_projects_admin():
                         conn.commit()
                 finally:
                     release_connection(conn)
-                log_audit(st.session_state.user['id'], "UPDATE_PROJECT_STATUS", "project", proj_id, new_status)
-                st.success("Status updated!")
+                st.success("✅ Status updated!")
                 st.rerun()
         
         elif proj_action == "🗑️ Delete Project":
-            st.warning(f"⚠️ You are about to permanently delete project: **{sel_proj}**")
-            st.caption("This will also delete all time entries and assignments for this project.")
-            
-            confirm = st.text_input("Type the project name to confirm deletion:", key="confirm_delete_proj")
+            st.warning(f"⚠️ Permanently delete project: **{sel_proj}**")
+            confirm = st.text_input("Type project name to confirm:", key="confirm_delete_proj")
             if st.button("🗑️ Permanently Delete Project", type="primary"):
                 if confirm == sel_proj:
                     conn = get_connection()
@@ -1133,14 +1567,14 @@ def techcore_projects_admin():
                             conn.commit()
                     finally:
                         release_connection(conn)
-                    log_audit(st.session_state.user['id'], "DELETE_PROJECT", "project", proj_id, sel_proj)
-                    st.success(f"✅ Project '{sel_proj}' deleted permanently!")
+                    log_audit(st.session_state.user['id'], "DELETE_PROJECT", "project", proj_id)
+                    st.success(f"✅ Project '{sel_proj}' deleted!")
                     st.rerun()
                 else:
-                    st.error("Project name doesn't match. Deletion cancelled.")
+                    st.error("Project name doesn't match.")
 
 def techcore_reports():
-    st.subheader("System Reports")
+    st.subheader("📊 System Reports")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -1152,6 +1586,7 @@ def techcore_reports():
         "Employee Hours Summary",
         "Project Hours Summary", 
         "Client Hours Summary",
+        "EE Internal Summary",
         "Utilization Report"
     ])
     
@@ -1192,7 +1627,18 @@ def techcore_reports():
                 GROUP BY c.id, c.name ORDER BY "Total_Hours" DESC
             """, (start, end))
         
-        else:
+        elif report_type == "EE Internal Summary":
+            df = execute_df("""
+                SELECT u.full_name as "Employee", te.entry_category as "Category",
+                       te.task_type as "Type", COALESCE(SUM(te.hours), 0) as "Total_Hours",
+                       COUNT(*) as "Entries"
+                FROM time_entries te
+                JOIN users u ON te.employee_id = u.id
+                WHERE te.entry_date BETWEEN %s AND %s AND te.status = 'approved' AND te.entry_type = 'ee_internal'
+                GROUP BY u.id, u.full_name, te.entry_category, te.task_type ORDER BY "Total_Hours" DESC
+            """, (start, end))
+        
+        else:  # Utilization Report
             df = execute_df("""
                 SELECT u.full_name as "Employee", u.department as "Department",
                        COALESCE(SUM(te.hours), 0) as "Total_Hours",
@@ -1210,17 +1656,11 @@ def techcore_reports():
             csv = df.to_csv(index=False)
             st.download_button("📥 Download CSV", csv, f"{report_type.replace(' ', '_')}.csv", "text/csv")
         else:
-            st.info("No data found for selected criteria")
+            st.info("📭 No data found")
 
 def techcore_export_center():
     st.subheader("📤 Export Center")
     
-    st.markdown("""
-    Export your timesheet data to CSV files for backup, analysis, or SharePoint upload.
-    """)
-    
-    # Date range selection
-    st.markdown("### 📅 Select Date Range")
     col1, col2 = st.columns(2)
     with col1:
         export_start = st.date_input("From Date", datetime.date.today() - timedelta(days=30), key="export_start")
@@ -1229,251 +1669,113 @@ def techcore_export_center():
     
     st.markdown("---")
     
-    # Export Options
-    st.markdown("### 📁 Select Data to Export")
-    
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("#### Time Entries")
+        st.markdown("##### 📋 Time Entries")
         if st.button("📥 Export All Time Entries", use_container_width=True):
             df = execute_df("""
-                SELECT 
-                    te.id as "Entry_ID",
-                    u.full_name as "Employee",
-                    u.department as "Department",
-                    c.name as "Client",
-                    p.name as "Project",
-                    te.entry_date as "Date",
-                    te.hours as "Hours",
-                    te.minutes as "Minutes",
-                    (te.hours + te.minutes/60.0) as "Total_Hours",
-                    te.task_type as "Task_Type",
-                    CASE WHEN te.is_billable THEN 'Yes' ELSE 'No' END as "Billable",
-                    te.status as "Status",
-                    te.description as "Description",
-                    te.submitted_at as "Submitted_At",
-                    r.full_name as "Reviewed_By",
-                    te.reviewed_at as "Reviewed_At",
-                    te.review_comment as "Review_Comment"
+                SELECT te.id as "Entry_ID", u.full_name as "Employee", u.department as "Department",
+                       COALESCE(c.name, 'EE Internal') as "Client", COALESCE(p.name, te.entry_category) as "Project",
+                       te.entry_date as "Date", te.hours as "Hours", te.minutes as "Minutes",
+                       te.task_type as "Task_Type", te.entry_type as "Entry_Type",
+                       CASE WHEN te.is_billable THEN 'Yes' ELSE 'No' END as "Billable",
+                       te.status as "Status", te.description as "Description",
+                       te.submitted_at as "Submitted_At", r.full_name as "Reviewed_By"
                 FROM time_entries te
                 JOIN users u ON te.employee_id = u.id
-                JOIN projects p ON te.project_id = p.id
-                JOIN clients c ON p.client_id = c.id
+                LEFT JOIN projects p ON te.project_id = p.id
+                LEFT JOIN clients c ON p.client_id = c.id
                 LEFT JOIN users r ON te.reviewed_by = r.id
                 WHERE te.entry_date BETWEEN %s AND %s
-                ORDER BY te.entry_date DESC, u.full_name
+                ORDER BY te.entry_date DESC
             """, (export_start, export_end))
             
             if not df.empty:
                 csv = df.to_csv(index=False)
                 timestamp = get_local_time().strftime('%Y%m%d_%H%M%S')
-                st.download_button(
-                    "⬇️ Download Time Entries CSV",
-                    csv,
-                    f"time_entries_{export_start}_{export_end}_{timestamp}.csv",
-                    "text/csv",
-                    key="download_entries"
-                )
-                st.success(f"✅ {len(df)} entries ready for download!")
+                st.download_button("⬇️ Download CSV", csv, f"time_entries_{timestamp}.csv", "text/csv", key="dl_entries")
+                st.success(f"✅ {len(df)} entries ready!")
             else:
-                st.warning("No time entries found for selected period")
+                st.warning("No data found")
         
-        st.markdown("#### Approved Entries Only")
-        if st.button("📥 Export Approved Entries", use_container_width=True):
+        if st.button("📥 Export Approved Only", use_container_width=True):
             df = execute_df("""
-                SELECT 
-                    u.full_name as "Employee",
-                    u.department as "Department",
-                    c.name as "Client",
-                    p.name as "Project",
-                    te.entry_date as "Date",
-                    te.hours as "Hours",
-                    te.minutes as "Minutes",
-                    (te.hours + te.minutes/60.0) as "Total_Hours",
-                    te.task_type as "Task_Type",
-                    CASE WHEN te.is_billable THEN 'Yes' ELSE 'No' END as "Billable",
-                    te.description as "Description",
-                    r.full_name as "Approved_By",
-                    te.reviewed_at as "Approved_At"
+                SELECT u.full_name as "Employee", COALESCE(c.name, 'EE Internal') as "Client",
+                       COALESCE(p.name, te.entry_category) as "Project", te.entry_date as "Date",
+                       te.hours as "Hours", te.task_type as "Task",
+                       CASE WHEN te.is_billable THEN 'Yes' ELSE 'No' END as "Billable"
                 FROM time_entries te
                 JOIN users u ON te.employee_id = u.id
-                JOIN projects p ON te.project_id = p.id
-                JOIN clients c ON p.client_id = c.id
-                LEFT JOIN users r ON te.reviewed_by = r.id
+                LEFT JOIN projects p ON te.project_id = p.id
+                LEFT JOIN clients c ON p.client_id = c.id
                 WHERE te.entry_date BETWEEN %s AND %s AND te.status = 'approved'
-                ORDER BY te.entry_date DESC, u.full_name
+                ORDER BY te.entry_date DESC
             """, (export_start, export_end))
             
             if not df.empty:
                 csv = df.to_csv(index=False)
                 timestamp = get_local_time().strftime('%Y%m%d_%H%M%S')
-                st.download_button(
-                    "⬇️ Download Approved Entries CSV",
-                    csv,
-                    f"approved_entries_{export_start}_{export_end}_{timestamp}.csv",
-                    "text/csv",
-                    key="download_approved"
-                )
-                st.success(f"✅ {len(df)} approved entries ready for download!")
+                st.download_button("⬇️ Download CSV", csv, f"approved_entries_{timestamp}.csv", "text/csv", key="dl_approved")
+                st.success(f"✅ {len(df)} entries ready!")
             else:
-                st.warning("No approved entries found for selected period")
+                st.warning("No data found")
     
     with col2:
-        st.markdown("#### Users List")
+        st.markdown("##### 👥 Users & Projects")
         if st.button("📥 Export All Users", use_container_width=True):
             df = execute_df("""
-                SELECT 
-                    u.id as "User_ID",
-                    u.username as "Username",
-                    u.full_name as "Full_Name",
-                    u.email as "Email",
-                    u.role as "Role",
-                    u.department as "Department",
-                    CASE WHEN u.is_active THEN 'Active' ELSE 'Inactive' END as "Status",
-                    u.created_at as "Created_At"
-                FROM users u
-                ORDER BY u.full_name
+                SELECT id as "ID", username as "Username", full_name as "Full_Name",
+                       email as "Email", role as "Role", department as "Department",
+                       CASE WHEN is_active THEN 'Active' ELSE 'Inactive' END as "Status"
+                FROM users ORDER BY full_name
             """)
-            
             if not df.empty:
                 csv = df.to_csv(index=False)
-                timestamp = get_local_time().strftime('%Y%m%d_%H%M%S')
-                st.download_button(
-                    "⬇️ Download Users CSV",
-                    csv,
-                    f"users_list_{timestamp}.csv",
-                    "text/csv",
-                    key="download_users"
-                )
-                st.success(f"✅ {len(df)} users ready for download!")
+                st.download_button("⬇️ Download CSV", csv, "users_list.csv", "text/csv", key="dl_users")
+                st.success(f"✅ {len(df)} users ready!")
         
-        st.markdown("#### Projects & Assignments")
         if st.button("📥 Export Projects & Teams", use_container_width=True):
             df = execute_df("""
-                SELECT 
-                    c.name as "Client",
-                    p.name as "Project",
-                    p.status as "Project_Status",
-                    m.full_name as "Project_Manager",
-                    u.full_name as "Team_Member",
-                    u.department as "Department",
-                    pa.assigned_at as "Assigned_At"
+                SELECT c.name as "Client", p.name as "Project", p.status as "Status",
+                       m.full_name as "Manager", u.full_name as "Team_Member"
                 FROM projects p
                 JOIN clients c ON p.client_id = c.id
                 LEFT JOIN users m ON p.manager_id = m.id
                 LEFT JOIN project_assignments pa ON p.id = pa.project_id
                 LEFT JOIN users u ON pa.employee_id = u.id
-                ORDER BY c.name, p.name, u.full_name
+                ORDER BY c.name, p.name
             """)
-            
             if not df.empty:
                 csv = df.to_csv(index=False)
-                timestamp = get_local_time().strftime('%Y%m%d_%H%M%S')
-                st.download_button(
-                    "⬇️ Download Projects CSV",
-                    csv,
-                    f"projects_teams_{timestamp}.csv",
-                    "text/csv",
-                    key="download_projects"
-                )
-                st.success(f"✅ {len(df)} records ready for download!")
+                st.download_button("⬇️ Download CSV", csv, "projects_teams.csv", "text/csv", key="dl_projects")
+                st.success(f"✅ {len(df)} records ready!")
     
     st.markdown("---")
+    st.markdown("##### 📦 Full Database Backup")
     
-    # Full Data Export
-    st.markdown("### 📦 Full Data Export (All Tables)")
-    
-    if st.button("📥 Export Complete Database Backup", use_container_width=True, type="primary"):
-        timestamp = get_local_time().strftime('%Y%m%d_%H%M%S')
-        
-        # Create Excel file with multiple sheets
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Users
-            users_df = execute_df("SELECT * FROM users ORDER BY id")
-            users_df.to_excel(writer, sheet_name='Users', index=False)
-            
-            # Clients
-            clients_df = execute_df("SELECT * FROM clients ORDER BY id")
-            clients_df.to_excel(writer, sheet_name='Clients', index=False)
-            
-            # Projects
-            projects_df = execute_df("SELECT * FROM projects ORDER BY id")
-            projects_df.to_excel(writer, sheet_name='Projects', index=False)
-            
-            # Project Assignments
-            assignments_df = execute_df("SELECT * FROM project_assignments ORDER BY id")
-            assignments_df.to_excel(writer, sheet_name='Assignments', index=False)
-            
-            # Time Entries
-            entries_df = execute_df("SELECT * FROM time_entries ORDER BY id")
-            entries_df.to_excel(writer, sheet_name='Time_Entries', index=False)
-            
-            # Audit Logs
-            audit_df = execute_df("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 10000")
-            audit_df.to_excel(writer, sheet_name='Audit_Logs', index=False)
-        
-        output.seek(0)
-        
-        st.download_button(
-            "⬇️ Download Full Backup (Excel)",
-            output,
-            f"timesheet_backup_{timestamp}.xlsx",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_full_backup"
-        )
-        st.success("✅ Full database backup ready for download!")
-        log_audit(st.session_state.user['id'], "EXPORT_FULL_BACKUP", "system", None, f"Backup created at {timestamp}")
-    
-    st.markdown("---")
-    
-    # SharePoint Instructions
-    st.markdown("### ☁️ Upload to SharePoint")
-    
-    with st.expander("📖 How to Upload to SharePoint", expanded=False):
-        st.markdown("""
-        **Manual Upload Steps:**
-        
-        1. **Download** the CSV/Excel file using buttons above
-        2. **Go to SharePoint** → Your document library
-        3. **Click "Upload"** → Select the downloaded file
-        4. **Done!** File is now in SharePoint
-        
-        ---
-        
-        **For Automatic Sync (Power Automate):**
-        
-        1. Go to [Power Automate](https://flow.microsoft.com)
-        2. Create a new flow: **"Scheduled cloud flow"**
-        3. Set schedule (e.g., Daily at 6 PM)
-        4. Add action: **"HTTP"** to call your app's export endpoint
-        5. Add action: **"SharePoint - Create file"**
-        6. Save and enable the flow
-        
-        ---
-        
-        **Recommended Folder Structure in SharePoint:**
-        ```
-        📁 Timesheet Reports
-           ├── 📁 Daily Exports
-           ├── 📁 Weekly Summaries
-           ├── 📁 Monthly Reports
-           └── 📁 Backups
-        ```
-        """)
-    
-    # Auto-export settings (stored in session for now)
-    st.markdown("### ⏰ Schedule Reminder")
-    st.info("""
-    💡 **Tip:** Set a calendar reminder to export data regularly:
-    - **Daily:** Time entries for payroll
-    - **Weekly:** Project summaries for management
-    - **Monthly:** Full backup for compliance
-    """)
+    if st.button("📥 Export Complete Backup (Excel)", use_container_width=True, type="primary"):
+        try:
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                execute_df("SELECT * FROM users").to_excel(writer, sheet_name='Users', index=False)
+                execute_df("SELECT * FROM clients").to_excel(writer, sheet_name='Clients', index=False)
+                execute_df("SELECT * FROM projects").to_excel(writer, sheet_name='Projects', index=False)
+                execute_df("SELECT * FROM project_assignments").to_excel(writer, sheet_name='Assignments', index=False)
+                execute_df("SELECT * FROM time_entries").to_excel(writer, sheet_name='Time_Entries', index=False)
+                execute_df("SELECT * FROM audit_logs ORDER BY id DESC LIMIT 5000").to_excel(writer, sheet_name='Audit_Logs', index=False)
+            output.seek(0)
+            timestamp = get_local_time().strftime('%Y%m%d_%H%M%S')
+            st.download_button("⬇️ Download Excel Backup", output, f"backup_{timestamp}.xlsx",
+                              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_backup")
+            st.success("✅ Backup ready!")
+            log_audit(st.session_state.user['id'], "EXPORT_BACKUP", "system", None)
+        except Exception as e:
+            st.error(f"Error: {e}")
+            st.info("Install openpyxl: pip install openpyxl")
 
 def techcore_settings():
-    st.subheader("System Settings")
+    st.subheader("⚙️ System Settings")
     
     settings_data = execute_query("SELECT key, value FROM settings")
     settings_dict = {s['key']: s['value'] for s in settings_data}
@@ -1502,11 +1804,11 @@ def techcore_settings():
         finally:
             release_connection(conn)
         log_audit(st.session_state.user['id'], "UPDATE_SETTINGS", "settings", None)
-        st.success("Settings saved!")
+        st.success("✅ Settings saved!")
         st.rerun()
     
     st.markdown("---")
-    st.subheader("Database Statistics")
+    st.markdown("##### 📊 Database Statistics")
     
     stats = {}
     for table in ['users', 'clients', 'projects', 'time_entries', 'audit_logs']:
@@ -1520,14 +1822,11 @@ def techcore_settings():
     col4.metric("Time Entries", stats['time_entries'])
     col5.metric("Audit Logs", stats['audit_logs'])
     
-    # Show current timezone
     st.markdown("---")
-    st.subheader("System Information")
-    st.info(f"🕐 **Server Timezone:** Africa/Lagos (WAT - West Africa Time)")
-    st.caption(f"Current server time: {get_local_time().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.info(f"🕐 **Server Time:** {get_local_time().strftime('%Y-%m-%d %H:%M:%S')} (Africa/Lagos - WAT)")
 
 def techcore_audit():
-    st.subheader("Audit Logs")
+    st.subheader("📜 Audit Logs")
     
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -1535,7 +1834,7 @@ def techcore_audit():
     with col2:
         end = st.date_input("To", datetime.date.today(), key="audit_end")
     with col3:
-        action_filter = st.text_input("Filter by Action", placeholder="e.g., LOGIN")
+        action_filter = st.text_input("Filter Action", placeholder="e.g., LOGIN")
     
     query = """
         SELECT al.id, u.username as "User", al.action as "Action", 
@@ -1555,7 +1854,7 @@ def techcore_audit():
     
     logs = execute_df(query, tuple(params))
     
-    st.info(f"Showing {len(logs)} records")
+    st.info(f"📋 Showing {len(logs)} records")
     st.dataframe(logs, use_container_width=True, hide_index=True)
     
     if not logs.empty:
@@ -1571,13 +1870,94 @@ def main():
         initial_sidebar_state="expanded"
     )
     
+    # Custom CSS for dark/light mode compatibility
     st.markdown("""
     <style>
-    .stApp {background-color: #f8f9fa;}
-    .stButton>button {border-radius: 8px;}
-    div[data-testid="stMetricValue"] {font-size: 28px;}
-    .stTabs [data-baseweb="tab-list"] {gap: 8px;}
-    .stTabs [data-baseweb="tab"] {background-color: white; border-radius: 8px 8px 0 0;}
+    /* Works in both dark and light mode */
+    .stApp {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    
+    /* Metric cards */
+    [data-testid="stMetricValue"] {
+        font-size: 1.8rem;
+        font-weight: 600;
+    }
+    
+    /* Buttons */
+    .stButton > button {
+        border-radius: 8px;
+        font-weight: 500;
+        transition: all 0.2s ease;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        border-radius: 8px 8px 0 0;
+        padding: 10px 20px;
+        font-weight: 500;
+    }
+    
+    /* Expanders */
+    .streamlit-expanderHeader {
+        font-weight: 600;
+        font-size: 1rem;
+    }
+    
+    /* Data frames */
+    .stDataFrame {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    /* Input fields */
+    .stTextInput > div > div > input,
+    .stSelectbox > div > div > div,
+    .stTextArea > div > div > textarea {
+        border-radius: 8px;
+    }
+    
+    /* Info/Warning/Error boxes */
+    .stAlert {
+        border-radius: 8px;
+    }
+    
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        padding-top: 1rem;
+    }
+    
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    /* Custom scrollbar */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    
+    ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    
+    ::-webkit-scrollbar-thumb {
+        background: #888;
+        border-radius: 4px;
+    }
+    
+    ::-webkit-scrollbar-thumb:hover {
+        background: #555;
+    }
     </style>
     """, unsafe_allow_html=True)
     
@@ -1595,26 +1975,40 @@ def main():
     
     user = st.session_state.user
     
+    # Sidebar
     with st.sidebar:
-        st.markdown(f"### 🧭 {get_setting('company_name') or 'Execution Edge'}")
+        company_name = get_setting('company_name') or 'Execution Edge'
+        st.markdown(f"### 🧭 {company_name}")
         st.markdown(f"**{user['full_name']}**")
         st.caption(f"Role: {user['role'].title()}")
+        
         st.markdown("---")
         
+        # Portal navigation
         if user['role'] == 'admin':
-            portal = st.radio("Portal", ["⚙️ TechCore", "🧮 Manage360", "🧭 WorkHub"])
+            portal = st.radio("📍 Portal", ["🧭 WorkHub", "🧮 Manage360", "⚙️ TechCore"], label_visibility="collapsed")
         elif user['role'] == 'manager':
-            portal = st.radio("Portal", ["🧮 Manage360", "🧭 WorkHub"])
+            portal = st.radio("📍 Portal", ["🧭 WorkHub", "🧮 Manage360"], label_visibility="collapsed")
         else:
             portal = "🧭 WorkHub"
+            st.info("📍 WorkHub")
         
         st.markdown("---")
+        
+        # Recall window info
+        recall_window = get_setting('recall_window_hours') or '24'
+        st.caption(f"⏰ Recall Window: {recall_window}h")
+        st.caption(f"🕐 {get_local_time().strftime('%H:%M:%S')} WAT")
+        
+        st.markdown("---")
+        
         if st.button("🚪 Logout", use_container_width=True):
             log_audit(user['id'], "LOGOUT", "user", user['id'])
             st.session_state.logged_in = False
             st.session_state.user = None
             st.rerun()
     
+    # Route to appropriate portal
     if "TechCore" in portal:
         techcore_dashboard()
     elif "Manage360" in portal:
