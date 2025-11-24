@@ -17,23 +17,47 @@ import os
 import pytz
 from io import BytesIO
 
-# Hide GitHub Icon, Streamlit Menu, and Footer
-hide_default_format = """
-       <style>
-       #MainMenu {visibility: hidden;}     /* Hides the hamburger menu */
-       footer {visibility: hidden;}        /* Hides “Made with Streamlit” footer */
-       header {visibility: hidden;}        /* Hides the header, including GitHub link */
-       .stAppDeployButton {display: none;} /* Hides "Deploy/Manage app" button */
-       </style>
-       """
+import streamlit as st
 
-st.markdown(hide_default_format, unsafe_allow_html=True)
+# Page config (set title, layout)
+st.set_page_config(page_title="Execution Edge — Timesheet", layout="centered")
 
-st.markdown("""
-    <style>
-    .block-container {padding-top: 2rem;}
-    </style>
-    """, unsafe_allow_html=True)
+# Inline CSS to hide Streamlit UI chrome and "Manage app" overlays
+hide_streamlit_css = """
+<style>
+/* basic Streamlit chrome */
+#MainMenu {visibility: hidden !important;}
+header {visibility: hidden !important;}
+footer {visibility: hidden !important;}
+
+/* remove Streamlit Cloud "Manage app" / deploy badge/button (many possible selectors) */
+.stAppDeployButton, .css-1q8dd3e, [data-testid="stAppView"], .appview-badge, .manage-app, .stAppViewerBadge {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+}
+
+/* small-screen/mobile specific badges/overlays */
+button[aria-label="Manage app"], div[title="Manage app"], div[aria-label="Manage app"] {
+    display: none !important;
+}
+
+/* remove any top-right share/github icons if present */
+a[href*="github.com"], .share-button, .css-1hynsf2 {
+    display: none !important;
+}
+
+/* keep layout nice after removing header */
+.block-container { padding-top: 1rem !important; }
+
+/* optional: make the whole app use your brand font/size (edit as needed) */
+:root {
+  --primary-color: #ff5a5f;
+}
+</style>
+"""
+st.markdown(hide_streamlit_css, unsafe_allow_html=True)
+
 
 
 # ============== TIMEZONE CONFIGURATION ==============
@@ -2037,4 +2061,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
