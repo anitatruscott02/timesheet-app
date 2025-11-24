@@ -19,45 +19,66 @@ from io import BytesIO
 
 import streamlit as st
 
-# Page config (set title, layout)
-st.set_page_config(page_title="Execution Edge — Timesheet", layout="centered")
+# 1) Page config - set your title and use your uploaded logo as favicon/page icon
+#    (replace the path if you want another image from /mnt/data/)
+st.set_page_config(page_title="Execution Edge — Timesheet", layout="centered",
+                   page_icon="/mnt/data/2a9ba46a-68e8-4302-82c2-09840bc64250.png")
 
-# Inline CSS to hide Streamlit UI chrome and "Manage app" overlays
+# 2) Stronger CSS to hide Streamlit chrome, owner badges, deploy/manage overlays, share/GitHub icons, and footer text
 hide_streamlit_css = """
 <style>
-/* basic Streamlit chrome */
+/* core Streamlit chrome */
 #MainMenu {visibility: hidden !important;}
 header {visibility: hidden !important;}
 footer {visibility: hidden !important;}
 
-/* remove Streamlit Cloud "Manage app" / deploy badge/button (many possible selectors) */
-.stAppDeployButton, .css-1q8dd3e, [data-testid="stAppView"], .appview-badge, .manage-app, .stAppViewerBadge {
+/* Common overlay/badge selectors used by Streamlit Cloud or themes */
+.stAppDeployButton,
+.appview-badge,
+.manage-app,
+[data-testid="app-viewer-badge"],
+.stAppViewerBadge,
+.viewer-badge,
+.viewer-embed,
+.__streamlit_container__ .css-1q8dd3e, /* fallback selectors */
+button[aria-label="Manage app"],
+div[title="Manage app"],
+div[aria-label="Manage app"] {
     display: none !important;
     visibility: hidden !important;
     opacity: 0 !important;
+    pointer-events: none !important;
 }
 
-/* small-screen/mobile specific badges/overlays */
-button[aria-label="Manage app"], div[title="Manage app"], div[aria-label="Manage app"] {
+/* Hide share/GitHub links or icons that may be injected */
+a[href*="github.com"], a[href*="share"], .share-button, .css-1hynsf2, .css-1rl3m87 {
     display: none !important;
 }
 
-/* remove any top-right share/github icons if present */
-a[href*="github.com"], .share-button, .css-1hynsf2 {
+/* Hide "Hosted with Streamlit" or similar textual badges that are links */
+a[href*="streamlit.io"], a[href*="streamlitapp"], .streamlit-badge, .stBadge {
     display: none !important;
 }
 
-/* keep layout nice after removing header */
+/* Keep layout nice after removing header */
 .block-container { padding-top: 1rem !important; }
 
-/* optional: make the whole app use your brand font/size (edit as needed) */
-:root {
-  --primary-color: #ff5a5f;
+/* Mobile: hide bottom-right badges */
+@media(max-width: 800px) {
+  .stAppDeployButton, .manage-app, .appview-badge, .viewer-badge {
+      display: none !important;
+  }
+}
+
+/* Extra: make sure no small fixed elements remain */
+div[role="dialog"][aria-label*="Manage"], div[role="dialog"][title*="Manage"] {
+    display: none !important;
 }
 </style>
 """
 st.markdown(hide_streamlit_css, unsafe_allow_html=True)
 
+# 3) After this you can render your normal UI (login, layout, etc.)
 
 
 # ============== TIMEZONE CONFIGURATION ==============
@@ -2061,5 +2082,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
