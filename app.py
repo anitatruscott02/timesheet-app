@@ -17,6 +17,25 @@ import os
 import pytz
 from io import BytesIO
 
+# Hide GitHub Icon, Streamlit Menu, and Footer
+hide_default_format = """
+       <style>
+       #MainMenu {visibility: hidden;}     /* Hides the hamburger menu */
+       footer {visibility: hidden;}        /* Hides “Made with Streamlit” footer */
+       header {visibility: hidden;}        /* Hides the header, including GitHub link */
+       .stAppDeployButton {display: none;} /* Hides "Deploy/Manage app" button */
+       </style>
+       """
+
+st.markdown(hide_default_format, unsafe_allow_html=True)
+
+st.markdown("""
+    <style>
+    .block-container {padding-top: 2rem;}
+    </style>
+    """, unsafe_allow_html=True)
+
+
 # ============== TIMEZONE CONFIGURATION ==============
 # West Africa Time (WAT) is UTC+1
 APP_TIMEZONE = pytz.timezone('Africa/Lagos')
@@ -2018,3 +2037,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
