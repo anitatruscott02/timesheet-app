@@ -1,6 +1,6 @@
 """
 Execution Edge Timesheet Management System
-Production-Ready with PostgreSQL - Enhanced UI
+Production-Ready with Beautiful UI - Light/Dark Mode Compatible
 """
 
 import streamlit as st
@@ -17,72 +17,524 @@ import os
 import pytz
 from io import BytesIO
 
-import streamlit as st
+# ============== PAGE CONFIGURATION ==============
+st.set_page_config(
+    page_title="Execution Edge — Timesheet",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# 1) Page config - set your title and use your uploaded logo as favicon/page icon
-#    (replace the path if you want another image from /mnt/data/)
-st.set_page_config(page_title="Execution Edge — Timesheet", layout="centered",
-                   page_icon="/mnt/data/2a9ba46a-68e8-4302-82c2-09840bc64250.png")
-
-# 2) Stronger CSS to hide Streamlit chrome, owner badges, deploy/manage overlays, share/GitHub icons, and footer text
-hide_streamlit_css = """
+# ============== COMPREHENSIVE CSS FOR BRANDING REMOVAL & BEAUTIFUL UI ==============
+st.markdown("""
 <style>
-/* core Streamlit chrome */
-#MainMenu {visibility: hidden !important;}
-header {visibility: hidden !important;}
-footer {visibility: hidden !important;}
+/* ========== COMPLETE STREAMLIT BRANDING REMOVAL ========== */
+/* Remove all Streamlit UI elements */
+#MainMenu {visibility: hidden !important; display: none !important;}
+header {visibility: hidden !important; display: none !important;}
+footer {visibility: hidden !important; display: none !important;}
 
-/* Common overlay/badge selectors used by Streamlit Cloud or themes */
-.stAppDeployButton,
-.appview-badge,
-.manage-app,
-[data-testid="app-viewer-badge"],
-.stAppViewerBadge,
-.viewer-badge,
-.viewer-embed,
-.__streamlit_container__ .css-1q8dd3e, /* fallback selectors */
-button[aria-label="Manage app"],
-div[title="Manage app"],
-div[aria-label="Manage app"] {
-    display: none !important;
-    visibility: hidden !important;
-    opacity: 0 !important;
-    pointer-events: none !important;
+/* Remove deploy button and badges */
+.stDeployButton {display: none !important;}
+button[kind="header"] {display: none !important;}
+[data-testid="stToolbar"] {display: none !important;}
+[data-testid="stDecoration"] {display: none !important;}
+[data-testid="stStatusWidget"] {display: none !important;}
+
+/* Remove GitHub and Streamlit links */
+.viewerBadge_container__1QSob {display: none !important;}
+.styles_viewerBadge__1yB5_ {display: none !important;}
+.viewerBadge_link__1S137 {display: none !important;}
+.viewerBadge_text__1JaDK {display: none !important;}
+
+/* Remove all footer elements */
+footer, .footer {display: none !important;}
+.css-164nlkn, .css-1n76uvr {display: none !important;}
+
+/* Remove "Made with Streamlit" */
+a[href*="streamlit.io"] {display: none !important;}
+
+/* Remove manage app button */
+button[title*="manage app"] {display: none !important;}
+button[title*="Manage app"] {display: none !important;}
+
+/* Additional overlay removals */
+.stApp > header {display: none !important;}
+iframe[title="streamlit_option_menu.nav_item"] {border: none !important;}
+
+/* ========== BEAUTIFUL UI STYLES ========== */
+/* Root variables for theme compatibility */
+:root {
+    --primary-color: #2E86DE;
+    --secondary-color: #54A0FF;
+    --success-color: #10AC84;
+    --warning-color: #FFA502;
+    --danger-color: #EE5A6F;
+    --text-primary: inherit;
+    --text-secondary: inherit;
+    --bg-primary: transparent;
+    --bg-secondary: rgba(128, 128, 128, 0.05);
+    --border-color: rgba(128, 128, 128, 0.2);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.1);
+    --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+    --shadow-lg: 0 10px 20px rgba(0, 0, 0, 0.15);
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
 }
 
-/* Hide share/GitHub links or icons that may be injected */
-a[href*="github.com"], a[href*="share"], .share-button, .css-1hynsf2, .css-1rl3m87 {
-    display: none !important;
+/* Main app container */
+.stApp {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
 }
 
-/* Hide "Hosted with Streamlit" or similar textual badges that are links */
-a[href*="streamlit.io"], a[href*="streamlitapp"], .streamlit-badge, .stBadge {
-    display: none !important;
+/* Adjust padding after header removal */
+.block-container {
+    padding-top: 2rem !important;
+    padding-bottom: 2rem !important;
+    max-width: 1400px !important;
 }
 
-/* Keep layout nice after removing header */
-.block-container { padding-top: 1rem !important; }
-
-/* Mobile: hide bottom-right badges */
-@media(max-width: 800px) {
-  .stAppDeployButton, .manage-app, .appview-badge, .viewer-badge {
-      display: none !important;
-  }
+/* ========== ENHANCED METRICS ========== */
+[data-testid="stMetricValue"] {
+    font-size: 2rem !important;
+    font-weight: 700 !important;
+    background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
 }
 
-/* Extra: make sure no small fixed elements remain */
-div[role="dialog"][aria-label*="Manage"], div[role="dialog"][title*="Manage"] {
-    display: none !important;
+[data-testid="stMetricLabel"] {
+    font-size: 0.9rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    opacity: 0.8;
+}
+
+[data-testid="stMetricDelta"] {
+    font-size: 0.85rem !important;
+    font-weight: 600 !important;
+}
+
+div[data-testid="metric-container"] {
+    background: var(--bg-secondary);
+    padding: 1.5rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-sm);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+div[data-testid="metric-container"]:hover {
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-md);
+    border-color: var(--primary-color);
+}
+
+/* ========== BEAUTIFUL BUTTONS ========== */
+.stButton > button {
+    border-radius: var(--radius-md) !important;
+    font-weight: 600 !important;
+    padding: 0.75rem 1.5rem !important;
+    border: none !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    position: relative;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm) !important;
+}
+
+.stButton > button:before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0));
+    opacity: 0;
+    transition: opacity 0.3s;
+}
+
+.stButton > button:hover:before {
+    opacity: 1;
+}
+
+.stButton > button:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: var(--shadow-md) !important;
+}
+
+.stButton > button:active {
+    transform: translateY(0) !important;
+}
+
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, var(--primary-color), var(--secondary-color)) !important;
+}
+
+.stButton > button[kind="secondary"] {
+    background: var(--bg-secondary) !important;
+    border: 2px solid var(--border-color) !important;
+}
+
+/* ========== ELEGANT TABS ========== */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0.5rem;
+    background: var(--bg-secondary);
+    padding: 0.5rem;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-color);
+}
+
+.stTabs [data-baseweb="tab"] {
+    border-radius: var(--radius-sm) !important;
+    padding: 0.75rem 1.5rem !important;
+    font-weight: 600 !important;
+    transition: all 0.3s ease !important;
+    border: none !important;
+    background: transparent !important;
+}
+
+.stTabs [data-baseweb="tab"]:hover {
+    background: rgba(128, 128, 128, 0.1) !important;
+}
+
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+    background: linear-gradient(135deg, var(--primary-color), var(--secondary-color)) !important;
+    color: white !important;
+    box-shadow: var(--shadow-sm) !important;
+}
+
+/* ========== REFINED EXPANDERS ========== */
+.streamlit-expanderHeader {
+    font-weight: 600 !important;
+    font-size: 1.1rem !important;
+    background: var(--bg-secondary) !important;
+    border-radius: var(--radius-md) !important;
+    padding: 1rem 1.25rem !important;
+    border: 1px solid var(--border-color) !important;
+    transition: all 0.3s ease !important;
+}
+
+.streamlit-expanderHeader:hover {
+    background: rgba(128, 128, 128, 0.08) !important;
+    border-color: var(--primary-color) !important;
+}
+
+details[open] > .streamlit-expanderHeader {
+    border-bottom-left-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+    border-color: var(--primary-color) !important;
+}
+
+.streamlit-expanderContent {
+    background: var(--bg-secondary) !important;
+    border: 1px solid var(--border-color) !important;
+    border-top: none !important;
+    border-bottom-left-radius: var(--radius-md) !important;
+    border-bottom-right-radius: var(--radius-md) !important;
+    padding: 1.25rem !important;
+}
+
+/* ========== POLISHED DATA TABLES ========== */
+.stDataFrame {
+    border-radius: var(--radius-md) !important;
+    overflow: hidden !important;
+    border: 1px solid var(--border-color) !important;
+    box-shadow: var(--shadow-sm) !important;
+}
+
+.stDataFrame [data-testid="stDataFrameResizable"] {
+    border-radius: var(--radius-md) !important;
+}
+
+/* DataFrame headers */
+.stDataFrame thead tr th {
+    background: linear-gradient(135deg, var(--primary-color), var(--secondary-color)) !important;
+    color: white !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    font-size: 0.85rem !important;
+    letter-spacing: 0.5px !important;
+    padding: 1rem !important;
+}
+
+/* DataFrame rows */
+.stDataFrame tbody tr {
+    transition: background-color 0.2s ease;
+}
+
+.stDataFrame tbody tr:hover {
+    background-color: rgba(128, 128, 128, 0.05) !important;
+}
+
+/* ========== ELEGANT INPUT FIELDS ========== */
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input,
+.stSelectbox > div > div,
+.stTextArea > div > div > textarea,
+.stDateInput > div > div > input {
+    border-radius: var(--radius-sm) !important;
+    border: 2px solid var(--border-color) !important;
+    padding: 0.75rem !important;
+    font-size: 1rem !important;
+    transition: all 0.3s ease !important;
+    background: var(--bg-secondary) !important;
+}
+
+.stTextInput > div > div > input:focus,
+.stNumberInput > div > div > input:focus,
+.stSelectbox > div > div:focus-within,
+.stTextArea > div > div > textarea:focus,
+.stDateInput > div > div > input:focus {
+    border-color: var(--primary-color) !important;
+    box-shadow: 0 0 0 3px rgba(46, 134, 222, 0.1) !important;
+}
+
+/* Input labels */
+.stTextInput > label,
+.stNumberInput > label,
+.stSelectbox > label,
+.stTextArea > label,
+.stDateInput > label {
+    font-weight: 600 !important;
+    font-size: 0.95rem !important;
+    margin-bottom: 0.5rem !important;
+}
+
+/* ========== BEAUTIFUL ALERTS ========== */
+.stAlert {
+    border-radius: var(--radius-md) !important;
+    border: none !important;
+    padding: 1rem 1.25rem !important;
+    box-shadow: var(--shadow-sm) !important;
+    font-weight: 500 !important;
+}
+
+div[data-baseweb="notification"] {
+    border-radius: var(--radius-md) !important;
+}
+
+/* Success alerts */
+.stSuccess {
+    background: linear-gradient(135deg, rgba(16, 172, 132, 0.1), rgba(16, 172, 132, 0.05)) !important;
+    border-left: 4px solid var(--success-color) !important;
+}
+
+/* Info alerts */
+.stInfo {
+    background: linear-gradient(135deg, rgba(46, 134, 222, 0.1), rgba(46, 134, 222, 0.05)) !important;
+    border-left: 4px solid var(--primary-color) !important;
+}
+
+/* Warning alerts */
+.stWarning {
+    background: linear-gradient(135deg, rgba(255, 165, 2, 0.1), rgba(255, 165, 2, 0.05)) !important;
+    border-left: 4px solid var(--warning-color) !important;
+}
+
+/* Error alerts */
+.stError {
+    background: linear-gradient(135deg, rgba(238, 90, 111, 0.1), rgba(238, 90, 111, 0.05)) !important;
+    border-left: 4px solid var(--danger-color) !important;
+}
+
+/* ========== REFINED SIDEBAR ========== */
+[data-testid="stSidebar"] {
+    background: var(--bg-secondary) !important;
+    border-right: 1px solid var(--border-color) !important;
+}
+
+[data-testid="stSidebar"] > div:first-child {
+    padding-top: 2rem !important;
+}
+
+/* Sidebar radio buttons */
+[data-testid="stSidebar"] .stRadio > div {
+    gap: 0.5rem;
+}
+
+[data-testid="stSidebar"] .stRadio > div > label {
+    background: rgba(128, 128, 128, 0.05) !important;
+    padding: 0.75rem 1rem !important;
+    border-radius: var(--radius-sm) !important;
+    font-weight: 600 !important;
+    transition: all 0.3s ease !important;
+    border: 2px solid transparent !important;
+}
+
+[data-testid="stSidebar"] .stRadio > div > label:hover {
+    background: rgba(128, 128, 128, 0.1) !important;
+    border-color: var(--primary-color) !important;
+}
+
+[data-testid="stSidebar"] .stRadio > div > label[data-baseweb="radio"] > div:first-child {
+    background: linear-gradient(135deg, var(--primary-color), var(--secondary-color)) !important;
+}
+
+/* ========== CUSTOM SCROLLBAR ========== */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+    border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+    border-radius: 5px;
+    transition: background 0.3s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--primary-color);
+}
+
+/* ========== PLOTLY CHARTS STYLING ========== */
+.js-plotly-plot {
+    border-radius: var(--radius-md) !important;
+    box-shadow: var(--shadow-sm) !important;
+    border: 1px solid var(--border-color) !important;
+}
+
+/* ========== CUSTOM CONTAINERS ========== */
+.custom-card {
+    background: var(--bg-secondary);
+    border-radius: var(--radius-lg);
+    padding: 1.5rem;
+    border: 1px solid var(--border-color);
+    box-shadow: var(--shadow-sm);
+    transition: all 0.3s ease;
+}
+
+.custom-card:hover {
+    box-shadow: var(--shadow-md);
+    transform: translateY(-2px);
+}
+
+/* ========== HEADERS & TYPOGRAPHY ========== */
+h1, h2, h3, h4, h5, h6 {
+    font-weight: 700 !important;
+    letter-spacing: -0.5px !important;
+}
+
+h1 {
+    font-size: 2.5rem !important;
+    margin-bottom: 1rem !important;
+}
+
+h2 {
+    font-size: 2rem !important;
+    margin-bottom: 0.875rem !important;
+}
+
+h3 {
+    font-size: 1.5rem !important;
+    margin-bottom: 0.75rem !important;
+}
+
+/* ========== LOADING ANIMATION ========== */
+.stSpinner > div {
+    border-color: var(--primary-color) !important;
+    border-right-color: transparent !important;
+}
+
+/* ========== RESPONSIVE DESIGN ========== */
+@media (max-width: 768px) {
+    .block-container {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+    
+    [data-testid="metric-container"] {
+        padding: 1rem;
+    }
+    
+    .stButton > button {
+        padding: 0.6rem 1rem !important;
+        font-size: 0.9rem !important;
+    }
+}
+
+/* ========== CHECKBOX & RADIO STYLING ========== */
+.stCheckbox > label {
+    font-weight: 500 !important;
+    padding: 0.5rem !important;
+    border-radius: var(--radius-sm) !important;
+    transition: background 0.2s ease !important;
+}
+
+.stCheckbox > label:hover {
+    background: rgba(128, 128, 128, 0.05) !important;
+}
+
+/* ========== DOWNLOAD BUTTON ========== */
+.stDownloadButton > button {
+    background: linear-gradient(135deg, var(--success-color), #0EE2A0) !important;
+    color: white !important;
+    font-weight: 600 !important;
+}
+
+/* ========== DIVIDERS ========== */
+hr {
+    margin: 2rem 0 !important;
+    border: none !important;
+    height: 1px !important;
+    background: linear-gradient(90deg, transparent, var(--border-color), transparent) !important;
+}
+
+/* ========== TOOLTIPS ========== */
+[data-testid="stTooltipIcon"] {
+    color: var(--primary-color) !important;
+}
+
+/* ========== FILE UPLOADER ========== */
+[data-testid="stFileUploader"] {
+    border: 2px dashed var(--border-color) !important;
+    border-radius: var(--radius-md) !important;
+    padding: 2rem !important;
+    transition: all 0.3s ease !important;
+}
+
+[data-testid="stFileUploader"]:hover {
+    border-color: var(--primary-color) !important;
+    background: rgba(46, 134, 222, 0.02) !important;
+}
+
+/* ========== ANIMATIONS ========== */
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.element-container {
+    animation: slideIn 0.3s ease-out;
+}
+
+/* ========== PRINT STYLES ========== */
+@media print {
+    [data-testid="stSidebar"] {
+        display: none !important;
+    }
+    
+    .stButton {
+        display: none !important;
+    }
 }
 </style>
-"""
-st.markdown(hide_streamlit_css, unsafe_allow_html=True)
-
-# 3) After this you can render your normal UI (login, layout, etc.)
-
+""", unsafe_allow_html=True)
 
 # ============== TIMEZONE CONFIGURATION ==============
-# West Africa Time (WAT) is UTC+1
 APP_TIMEZONE = pytz.timezone('Africa/Lagos')
 
 def get_local_time():
@@ -105,7 +557,6 @@ def format_datetime(dt):
         except:
             return dt
     if hasattr(dt, 'tzinfo') and dt.tzinfo is None:
-        # Assume it's already in local time
         return dt.strftime('%Y-%m-%d %H:%M:%S')
     elif hasattr(dt, 'astimezone'):
         return dt.astimezone(APP_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')
@@ -211,7 +662,7 @@ def init_database():
                 UNIQUE(project_id, employee_id)
             )''')
             
-            # Time entries - Updated with entry_type and category
+            # Time entries
             c.execute('''CREATE TABLE IF NOT EXISTS time_entries (
                 id SERIAL PRIMARY KEY,
                 employee_id INTEGER NOT NULL REFERENCES users(id),
@@ -233,7 +684,7 @@ def init_database():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )''')
             
-            # Add new columns if they don't exist (for existing databases)
+            # Add new columns if they don't exist
             try:
                 c.execute("ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS entry_type VARCHAR(50) DEFAULT 'project_work'")
                 c.execute("ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS entry_category VARCHAR(50)")
@@ -334,7 +785,6 @@ def authenticate(username, password):
             else:
                 return {"error": "Account is deactivated"}
     return None
-
 def login_page():
     # Get company name
     company_name = get_setting('company_name') or 'Execution Edge'
@@ -2082,6 +2532,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
