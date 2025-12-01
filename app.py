@@ -61,6 +61,54 @@ button[title*="Manage app"] {display: none !important;}
 .stApp > header {display: none !important;}
 iframe[title="streamlit_option_menu.nav_item"] {border: none !important;}
 
+/* ========== REMOVE BOTTOM RIGHT ICONS (GitHub, Streamlit, etc) ========== */
+/* Remove all floating action buttons */
+.stActionButton {display: none !important;}
+button[kind="icon"] {display: none !important;}
+button[kind="borderless"] {display: none !important;}
+
+/* Remove GitHub icon */
+svg[class*="github"] {display: none !important;}
+a[aria-label*="GitHub"] {display: none !important;}
+button[aria-label*="GitHub"] {display: none !important;}
+
+/* Remove fork/edit buttons */
+button[title*="Fork"] {display: none !important;}
+button[title*="Edit"] {display: none !important;}
+a[title*="Fork"] {display: none !important;}
+a[title*="Edit"] {display: none !important;}
+
+/* Remove bottom-right corner elements */
+.styles_stActionButtonIcon__LySVS {display: none !important;}
+.stApp > div > div > div > div > button {
+    display: none !important;
+}
+
+/* Remove any fixed position buttons */
+button[style*="position: fixed"] {display: none !important;}
+div[style*="position: fixed"] > button {display: none !important;}
+
+/* Remove Streamlit branding icons */
+svg[class*="streamlit"] {display: none !important;}
+img[alt*="Streamlit"] {display: none !important;}
+
+/* Remove all floating elements in bottom corners */
+div[data-testid="stBottom"] {display: none !important;}
+.element-container:has(button[kind="icon"]) {display: none !important;}
+
+/* Remove app menu and settings */
+.stAppViewBlockContainer > div:last-child > div:last-child {display: none !important;}
+
+/* Nuclear option for bottom-right icons */
+.main > div:last-child > div:last-child > button,
+.main > div:last-child > button,
+div[style*="bottom: 1rem"][style*="right: 1rem"] {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
 /* ========== BEAUTIFUL UI STYLES ========== */
 /* Root variables for theme compatibility */
 :root {
@@ -2532,6 +2580,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
