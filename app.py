@@ -141,56 +141,40 @@ a[style*="position: absolute"][style*="bottom"] {display: none !important;}
 .css-1n76uvr {display: none !important;}
 .css-164nlkn {display: none !important;}
 
-/* TARGETED BADGE REMOVAL - SAFE VERSION */
-/* Only target specific badge elements without affecting app content */
-
-/* Hide viewer badge by specific classes */
-.viewerBadge_container__r5tak,
-.viewerBadge_link__qRIco,
-.viewerBadge_text__1JaDK,
-[class*="viewerBadge"] {
+/* ULTIMATE NUCLEAR OPTION - Hide everything in bottom right corner */
+.stApp > div > div:last-child > div:last-child {
     display: none !important;
     visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    width: 0 !important;
+    height: 0 !important;
 }
 
-/* Hide GitHub and Streamlit links in badges only */
-a[href*="github.com/"][style*="position: fixed"],
-a[href*="streamlit.io"][style*="position: fixed"] {
-    display: none !important;
+/* Hide sidebar collapse button if needed */
+[data-testid="baseButton-header"] {display: none !important;}
+
+/* Additional catch-all */
+iframe[title*="streamlit" i] {display: none !important;}
+div[class*="Badge" i] {display: none !important;}
+
+/* Force hide any element with "hosted" or "created" text */
+*:has-text("Hosted with Streamlit") {display: none !important;}
+*:has-text("created by") {display: none !important;}
+
+/* Z-index override to ensure nothing floats on top */
+.stApp {
+    z-index: 1 !important;
 }
 
-/* Target bottom badge containers specifically */
-div[data-testid="stBottomBlockContainer"] {
-    display: none !important;
+.stApp * {
+    z-index: auto !important;
 }
 
-/* Hide only the bottom-right corner badges (very specific positioning) */
-body > div[style*="position: fixed"][style*="bottom: 0"][style*="right: 0"],
-body > div[style*="position: fixed"][style*="bottom: 0px"][style*="right: 0px"] {
-    display: none !important;
-}
-
-/* Cover badges with a white/transparent overlay */
-body::after {
-    content: '';
-    position: fixed;
-    bottom: 0;
-    right: 0;
-    width: 350px;
-    height: 80px;
-    background: var(--bg-primary);
-    z-index: 999999;
-    pointer-events: none;
-}
-
-/* Alternative: Push badges off screen */
-[class*="viewerBadge"],
-[class*="ViewerBadge"],
-[data-testid*="badge" i] {
-    transform: translateX(1000px) !important;
-    position: absolute !important;
-    left: -9999px !important;
-}
+/* Remove all children of fixed positioned divs */
+div[style*="position: fixed"] > * {display: none !important;}
+div[style*="position: fixed"]::before {display: none !important;}
+div[style*="position: fixed"]::after {display: none !important;}
 
 /* ========== BEAUTIFUL UI STYLES ========== */
 /* Root variables for theme compatibility */
@@ -2663,6 +2647,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
