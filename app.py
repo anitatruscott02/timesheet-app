@@ -24,6 +24,80 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ============== JAVASCRIPT TO REMOVE BADGES ==============
+# This JavaScript runs after page load to forcefully remove badges
+st.components.v1.html("""
+<script>
+    // Wait for page to fully load
+    window.addEventListener('load', function() {
+        // Function to remove badges
+        function removeBadges() {
+            // Remove by class patterns
+            const badgeClasses = [
+                'viewerBadge',
+                'styles_viewerBadge',
+                'viewer-badge',
+                'stDeployButton',
+                'stActionButton'
+            ];
+            
+            badgeClasses.forEach(className => {
+                document.querySelectorAll(`[class*="${className}"]`).forEach(el => {
+                    el.remove();
+                });
+            });
+            
+            // Remove by text content
+            const textPatterns = ['Hosted with Streamlit', 'Created by', 'anitatruscott02'];
+            document.querySelectorAll('*').forEach(el => {
+                if (el.children.length === 0) {
+                    textPatterns.forEach(pattern => {
+                        if (el.textContent.includes(pattern)) {
+                            let parent = el.parentElement;
+                            while (parent && parent !== document.body) {
+                                if (parent.tagName === 'DIV' || parent.tagName === 'A') {
+                                    parent.style.display = 'none';
+                                    break;
+                                }
+                                parent = parent.parentElement;
+                            }
+                        }
+                    });
+                }
+            });
+            
+            // Remove fixed position elements in bottom corners
+            document.querySelectorAll('div, a').forEach(el => {
+                const style = window.getComputedStyle(el);
+                if (style.position === 'fixed' || style.position === 'absolute') {
+                    const bottom = parseInt(style.bottom);
+                    const right = parseInt(style.right);
+                    if (bottom >= 0 && bottom < 100 && right >= 0 && right < 200) {
+                        el.style.display = 'none';
+                    }
+                }
+            });
+            
+            // Remove GitHub links
+            document.querySelectorAll('a[href*="github.com"]').forEach(el => el.remove());
+            document.querySelectorAll('a[href*="streamlit.io"]').forEach(el => el.remove());
+        }
+        
+        // Run immediately
+        removeBadges();
+        
+        // Run again after delays (catches dynamically loaded content)
+        setTimeout(removeBadges, 500);
+        setTimeout(removeBadges, 1000);
+        setTimeout(removeBadges, 2000);
+        
+        // Observe DOM changes and remove badges when they appear
+        const observer = new MutationObserver(removeBadges);
+        observer.observe(document.body, { childList: true, subtree: true });
+    });
+</script>
+""", height=0)
+
 # ============== COMPREHENSIVE CSS FOR BRANDING REMOVAL & BEAUTIFUL UI ==============
 st.markdown("""
 <style>
@@ -150,6 +224,37 @@ a[style*="position: absolute"][style*="bottom"] {display: none !important;}
     height: 0 !important;
 }
 
+/* Target the exact badge containers */
+div[data-testid="stBottomBlockContainer"] {display: none !important;}
+div[data-testid="stBottom"] {display: none !important;}
+
+/* Hide by exact position (bottom-right badges) */
+div[style*="bottom: 0"][style*="right: 0"],
+div[style*="bottom: 0px"][style*="right: 0px"],
+div[style*="bottom:0"][style*="right:0"] {
+    display: none !important;
+}
+
+/* Hide elements with specific z-index (badges usually have high z-index) */
+div[style*="z-index: 1000"],
+div[style*="z-index: 999999"] {
+    display: none !important;
+}
+
+/* Hide all anchor tags at bottom */
+a[style*="position: fixed"][style*="bottom"],
+a[style*="position: absolute"][style*="bottom"] {
+    display: none !important;
+}
+
+/* Aggressive content-based hiding */
+*[aria-label*="hosted" i],
+*[aria-label*="created" i],
+*[title*="hosted" i],
+*[title*="created" i] {
+    display: none !important;
+}
+
 /* Hide sidebar collapse button if needed */
 [data-testid="baseButton-header"] {display: none !important;}
 
@@ -174,6 +279,34 @@ div[class*="Badge" i] {display: none !important;}
 div[style*="position: fixed"] > * {display: none !important;}
 div[style*="position: fixed"]::before {display: none !important;}
 div[style*="position: fixed"]::after {display: none !important;}
+
+/* EXTRA AGGRESSIVE: Hide everything that looks like a badge */
+body > div:last-child,
+#root > div:last-child,
+.stApp + div,
+.stApp ~ div {
+    display: none !important;
+}
+
+/* Hide React portal containers (where badges are often rendered) */
+body > div[class=""],
+body > div:not([class]):not([id]) {
+    display: none !important;
+}
+
+/* Block pointer events on bottom corner */
+body::after {
+    content: '';
+    position: fixed;
+    bottom: 0;
+    right: 0;
+    width: 300px;
+    height: 100px;
+    background: transparent;
+    pointer-events: none;
+    z-index: 9999999;
+}
+
 
 /* ========== BEAUTIFUL UI STYLES ========== */
 /* Root variables for theme compatibility */
@@ -2646,6 +2779,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
