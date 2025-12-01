@@ -24,12 +24,10 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-
 # ============== COMPREHENSIVE CSS FOR BRANDING REMOVAL & BEAUTIFUL UI ==============
 st.markdown("""
 <style>
-/* ========== AGGRESSIVE STREAMLIT BRANDING REMOVAL ========== */
-/* Hide ALL possible Streamlit elements */
+/* ========== COMPLETE STREAMLIT BRANDING REMOVAL ========== */
 /* Remove all Streamlit UI elements */
 #MainMenu {visibility: hidden !important; display: none !important;}
 header {visibility: hidden !important; display: none !important;}
@@ -63,118 +61,53 @@ button[title*="Manage app"] {display: none !important;}
 .stApp > header {display: none !important;}
 iframe[title="streamlit_option_menu.nav_item"] {border: none !important;}
 
-/* ========== AGGRESSIVE STREAMLIT BRANDING REMOVAL ========== */
-/* Hide ALL possible Streamlit elements */
-#MainMenu {visibility: hidden !important; display: none !important;}
-header {visibility: hidden !important; display: none !important;}
-footer {visibility: hidden !important; display: none !important;}
+/* ========== REMOVE BOTTOM RIGHT ICONS (GitHub, Streamlit, etc) ========== */
+/* Remove all floating action buttons */
+.stActionButton {display: none !important;}
+button[kind="icon"] {display: none !important;}
+button[kind="borderless"] {display: none !important;}
 
-/* CRITICAL: Hide "Hosted with Streamlit" and GitHub badges */
-.viewerBadge_container__r5tak {display: none !important;}
-.viewerBadge_container__1QSob {display: none !important;}
-.viewerBadge_link__qRIco {display: none !important;}
-.viewerBadge_text__1JaDK {display: none !important;}
-[class*="viewerBadge"] {display: none !important;}
-
-/* Hide all elements containing "streamlit" text */
-*[class*="streamlit" i] {display: none !important;}
-*[id*="streamlit" i] {display: none !important;}
-
-/* Remove ALL footer and header content */
-.stApp header, .stApp footer {display: none !important;}
-section[data-testid="stSidebar"] + div > div > div > div > div:first-child {display: none !important;}
-
-/* Hide GitHub fork/edit icons and links */
-a[href*="github.com"] {display: none !important;}
-a[href*="streamlit.io"] {display: none !important;}
+/* Remove GitHub icon */
+svg[class*="github"] {display: none !important;}
 a[aria-label*="GitHub"] {display: none !important;}
 button[aria-label*="GitHub"] {display: none !important;}
 
-/* Remove deploy and action buttons */
-.stDeployButton {display: none !important;}
-.stActionButton {display: none !important;}
-button[kind="header"] {display: none !important;}
-button[kind="icon"] {display: none !important;}
-button[kind="borderless"] {display: none !important;}
-button[kind="borderlessIcon"] {display: none !important;}
+/* Remove fork/edit buttons */
+button[title*="Fork"] {display: none !important;}
+button[title*="Edit"] {display: none !important;}
+a[title*="Fork"] {display: none !important;}
+a[title*="Edit"] {display: none !important;}
 
-/* Hide toolbar and decorations */
-[data-testid="stToolbar"] {display: none !important;}
-[data-testid="stDecoration"] {display: none !important;}
-[data-testid="stStatusWidget"] {display: none !important;}
-[data-testid="collapsedControl"] {display: none !important;}
+/* Remove bottom-right corner elements */
+.styles_stActionButtonIcon__LySVS {display: none !important;}
+.stApp > div > div > div > div > button {
+    display: none !important;
+}
 
-/* Remove bottom-right floating elements */
+/* Remove any fixed position buttons */
+button[style*="position: fixed"] {display: none !important;}
+div[style*="position: fixed"] > button {display: none !important;}
+
+/* Remove Streamlit branding icons */
+svg[class*="streamlit"] {display: none !important;}
+img[alt*="Streamlit"] {display: none !important;}
+
+/* Remove all floating elements in bottom corners */
 div[data-testid="stBottom"] {display: none !important;}
-.stApp > div:last-child {display: none !important;}
+.element-container:has(button[kind="icon"]) {display: none !important;}
 
-/* Hide ALL fixed position elements (this catches the badges) */
-div[style*="position: fixed"][style*="bottom"] {display: none !important;}
-div[style*="position: fixed"][style*="right"] {display: none !important;}
-div[style*="position: absolute"][style*="bottom"] {display: none !important;}
+/* Remove app menu and settings */
+.stAppViewBlockContainer > div:last-child > div:last-child {display: none !important;}
 
-/* Target specific badge locations */
-.main > div:last-child {display: none !important;}
-.css-1dp5vir {display: none !important;}
-.css-18ni7ap {display: none !important;}
-.css-1v0mbdj {display: none !important;}
-
-/* Remove manage app overlay */
-button[title*="manage app" i] {display: none !important;}
-button[title*="Manage app" i] {display: none !important;}
-div[title*="manage app" i] {display: none !important;}
-
-/* Hide SVG icons */
-svg[class*="github" i] {display: none !important;}
-svg[class*="streamlit" i] {display: none !important;}
-
-/* Nuclear option - hide all anchor tags in fixed positions */
-a[style*="position: fixed"] {display: none !important;}
-a[style*="position: absolute"][style*="bottom"] {display: none !important;}
-
-/* Remove any remaining badges */
-.styles_viewerBadge__1yB5_ {display: none !important;}
-.styles_viewerBadge__CW36O {display: none !important;}
-
-/* Hide app header container */
-.css-k1vhr4 {display: none !important;}
-.css-1n76uvr {display: none !important;}
-.css-164nlkn {display: none !important;}
-
-/* ULTIMATE NUCLEAR OPTION - Hide everything in bottom right corner */
-.stApp > div > div:last-child > div:last-child {
+/* Nuclear option for bottom-right icons */
+.main > div:last-child > div:last-child > button,
+.main > div:last-child > button,
+div[style*="bottom: 1rem"][style*="right: 1rem"] {
     display: none !important;
     visibility: hidden !important;
     opacity: 0 !important;
     pointer-events: none !important;
-    width: 0 !important;
-    height: 0 !important;
 }
-
-/* Hide sidebar collapse button if needed */
-[data-testid="baseButton-header"] {display: none !important;}
-
-/* Additional catch-all */
-iframe[title*="streamlit" i] {display: none !important;}
-div[class*="Badge" i] {display: none !important;}
-
-/* Force hide any element with "hosted" or "created" text */
-*:has-text("Hosted with Streamlit") {display: none !important;}
-*:has-text("created by") {display: none !important;}
-
-/* Z-index override to ensure nothing floats on top */
-.stApp {
-    z-index: 1 !important;
-}
-
-.stApp * {
-    z-index: auto !important;
-}
-
-/* Remove all children of fixed positioned divs */
-div[style*="position: fixed"] > * {display: none !important;}
-div[style*="position: fixed"]::before {display: none !important;}
-div[style*="position: fixed"]::after {display: none !important;}
 
 /* ========== BEAUTIFUL UI STYLES ========== */
 /* Root variables for theme compatibility */
@@ -900,6 +833,8 @@ def authenticate(username, password):
             else:
                 return {"error": "Account is deactivated"}
     return None
+
+
 def login_page():
     # Get company name
     company_name = get_setting('company_name') or 'Execution Edge'
@@ -2647,6 +2582,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
